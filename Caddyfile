@@ -15,6 +15,7 @@ www.rechargealaska.net {
 
     # ── v3 Frontend (React SPA) ──────────────────────────────────────────────
     handle /app* {
+        uri strip_prefix /app
         root * /srv/app
         try_files {path} /index.html
         file_server

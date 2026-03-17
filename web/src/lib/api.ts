@@ -1,19 +1,36 @@
 /**
- * Thin API client — wraps fetch with auth cookie forwarding.
- * All requests are credentialed so the Supabase cookie is included.
+ * Thin API client — wraps fetch with Supabase Bearer token auth.
+ * Gets the current session token from the Supabase client and sends it
+ * as Authorization: Bearer so the backend can validate it regardless of
+ * whether the browser has a Supabase cookie set.
  */
+
+import { supabase } from './supabase'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // Get the current session token from Supabase (stored in localStorage)
+  const { data: { session } } = await supabase.auth.getSession()
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string> ?? {}),
+  }
+  if (session?.access_token) {
+    headers['Authorization'] = `Bearer ${session.access_token}`
+  }
+
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers,
     ...init,
   })
   if (!res.ok) {
     if (res.status === 401) {
-      window.location.href = '/login'
+      // Session is invalid — sign out so onAuthStateChange fires and
+      // App.tsx shows the LoginScreen inline (no /login redirect needed)
+      await supabase.auth.signOut()
     }
     throw new Error(`API error ${res.status}: ${path}`)
   }

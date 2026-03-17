@@ -27,7 +27,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Annotated
 
-from fastapi import Cookie, Depends, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, Header, status
 
 from .config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, DEV_BYPASS_AUTH
 
@@ -148,32 +148,42 @@ def _find_supabase_cookie(cookies: dict[str, str]) -> str | None:
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────
 
-async def get_current_user(cookie: Annotated[str | None, Cookie(alias="cookie")] = None) -> PortalUser:
-    """FastAPI dependency — resolves the authenticated user or raises 401."""
+async def get_current_user(
+    authorization: Annotated[str | None, Header(alias="authorization")] = None,
+    cookie: Annotated[str | None, Cookie(alias="cookie")] = None,
+) -> PortalUser:
+    """FastAPI dependency — resolves the authenticated user or raises 401.
+
+    Accepts auth via (in priority order):
+      1. Authorization: Bearer <jwt>  — preferred (sent by React frontend)
+      2. sb-*-auth-token cookie       — fallback for browsers that set it
+    """
 
     # DEV: bypass auth entirely for local review
     if DEV_BYPASS_AUTH:
         return PortalUser(email="kris.hall@rechargealaska.net", user_id="37553d35-318b-4587-ac86-2ee346b9c4ca", allowed_evse_ids=None)
 
-    if not cookie:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    access_token: str | None = None
 
-    # Parse the Cookie header into a dict
-    cookies: dict[str, str] = {}
-    for part in cookie.split(";"):
-        part = part.strip()
-        if "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        cookies[k.strip()] = v.strip()
+    # 1. Try Authorization: Bearer header (set by api.ts via Supabase localStorage session)
+    if authorization and authorization.startswith("Bearer "):
+        access_token = authorization[7:].strip() or None
 
-    raw_cookie = _find_supabase_cookie(cookies)
-    if not raw_cookie:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No auth cookie")
+    # 2. Fall back to Supabase cookie (sb-*-auth-token)
+    if not access_token and cookie:
+        cookies: dict[str, str] = {}
+        for part in cookie.split(";"):
+            part = part.strip()
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            cookies[k.strip()] = v.strip()
+        raw_cookie = _find_supabase_cookie(cookies)
+        if raw_cookie:
+            access_token = _extract_access_token_from_cookie(raw_cookie)
 
-    access_token = _extract_access_token_from_cookie(raw_cookie)
     if not access_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed auth cookie")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     # Check in-memory cache
     ck = _cache_key(access_token)

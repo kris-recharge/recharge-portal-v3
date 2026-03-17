@@ -160,6 +160,7 @@ function LoginScreen() {
       email,
       token,
       type: 'email',
+      options: { redirectTo: 'https://dashboard.rechargealaska.net/app' },
     })
     setLoading(false)
     if (error) setError(error.message)

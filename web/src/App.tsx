@@ -132,24 +132,38 @@ export default function App() {
   )
 }
 
-// ── Login screen (magic link) ──────────────────────────────────────────────────
+// ── Login screen (email OTP) ───────────────────────────────────────────────────
 function LoginScreen() {
   const [email,   setEmail]   = useState('')
+  const [token,   setToken]   = useState('')
   const [sent,    setSent]    = useState(false)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
 
-  async function handleSubmit(e: React.FormEvent) {
+  // Step 1 — send OTP code to email
+  async function handleSend(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError(null)
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.href },
-    })
+    const { error } = await supabase.auth.signInWithOtp({ email })
     setLoading(false)
     if (error) setError(error.message)
     else setSent(true)
+  }
+
+  // Step 2 — verify the 6-digit code
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault()
+    setLoading(true)
+    setError(null)
+    const { error } = await supabase.auth.verifyOtp({
+      email,
+      token,
+      type: 'email',
+    })
+    setLoading(false)
+    if (error) setError(error.message)
+    // on success onAuthStateChange fires → userEmail is set → main app renders
   }
 
   return (
@@ -164,24 +178,14 @@ function LoginScreen() {
           <span className="text-gray-300 text-xs">v3</span>
         </div>
 
-        {sent ? (
-          <div className="text-center">
-            <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4">
-              <Mail size={20} className="text-emerald-600" />
-            </div>
-            <h2 className="text-sm font-semibold text-gray-900 mb-1">Check your email</h2>
-            <p className="text-xs text-gray-500">
-              We sent a magic link to <strong>{email}</strong>.<br />
-              Click the link to sign in.
-            </p>
-          </div>
-        ) : (
+        {!sent ? (
+          /* Step 1 — enter email */
           <>
             <h2 className="text-sm font-semibold text-gray-900 mb-1">Sign in</h2>
             <p className="text-xs text-gray-500 mb-6">
-              Enter your email and we'll send you a magic link.
+              Enter your email and we'll send you a 6-digit code.
             </p>
-            <form onSubmit={handleSubmit} className="space-y-3">
+            <form onSubmit={handleSend} className="space-y-3">
               <input
                 type="email"
                 required
@@ -190,15 +194,55 @@ function LoginScreen() {
                 onChange={e => setEmail(e.target.value)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              {error && (
-                <p className="text-xs text-red-500">{error}</p>
-              )}
+              {error && <p className="text-xs text-red-500">{error}</p>}
               <button
                 type="submit"
                 disabled={loading}
                 className="w-full bg-blue-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
               >
-                {loading ? 'Sending…' : 'Send magic link'}
+                {loading ? 'Sending…' : 'Send code'}
+              </button>
+            </form>
+          </>
+        ) : (
+          /* Step 2 — enter OTP code */
+          <>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center shrink-0">
+                <Mail size={18} className="text-emerald-600" />
+              </div>
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Check your email</h2>
+                <p className="text-xs text-gray-500">
+                  Code sent to <strong>{email}</strong>
+                </p>
+              </div>
+            </div>
+            <form onSubmit={handleVerify} className="space-y-3">
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                required
+                placeholder="6-digit code"
+                value={token}
+                onChange={e => setToken(e.target.value.replace(/\D/g, ''))}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 tracking-widest text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {error && <p className="text-xs text-red-500">{error}</p>}
+              <button
+                type="submit"
+                disabled={loading || token.length < 6}
+                className="w-full bg-blue-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {loading ? 'Verifying…' : 'Sign in'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSent(false); setToken(''); setError(null) }}
+                className="w-full text-xs text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                Use a different email
               </button>
             </form>
           </>

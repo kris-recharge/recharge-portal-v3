@@ -1,0 +1,35 @@
+# ── Secrets — NEVER commit these ──────────────────────────────────────────────
+.env
+web/.env.local
+web/.env
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# ── Node / Vite ───────────────────────────────────────────────────────────────
+web/node_modules/
+web/dist/
+web/.vite/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+
+# ── Editor ────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ── Runtime overrides (local dev only — VPS has its own) ──────────────────────
+app/runtime_overrides.json
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log

@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --border: 214 32% 91%;
+    --ring: 221 83% 53%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    @apply bg-gray-50 text-gray-900 font-sans antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+}
+
+/* Skeleton loader animation */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  @apply rounded bg-gray-200;
+  background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Tab styles */
+.tab-active {
+  @apply border-b-2 border-blue-600 text-blue-600 font-medium;
+}
+
+.tab-inactive {
+  @apply border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300;
+}
+
+/* Table */
+.data-table th {
+  @apply bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4 py-3 text-left whitespace-nowrap;
+}
+
+.data-table td {
+  @apply px-4 py-3 text-sm text-gray-700 border-t border-gray-100 whitespace-nowrap;
+}
+
+.data-table tr:hover td {
+  @apply bg-blue-50/40;
+}

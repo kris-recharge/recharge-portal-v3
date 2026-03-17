@@ -1,0 +1,39 @@
+version: "3.9"
+
+# ReCharge Alaska Portal v3
+# Extends the existing VPS stack — v2 services are in the separate v2 docker-compose.yml
+# and continue running unchanged.
+
+services:
+
+  rca_api_v3:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    container_name: rca_api_v3
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "8000"
+    networks:
+      - rca_net
+
+  rca_web_v3:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: rca_web_v3
+    restart: unless-stopped
+    # The built dist is served by Caddy on the host — this container just holds
+    # the build artifact. We copy it out via a volume mount for Caddy to serve.
+    volumes:
+      - rca_web_v3_dist:/srv/app
+    networks:
+      - rca_net
+
+volumes:
+  rca_web_v3_dist:
+
+networks:
+  rca_net:
+    external: true   # shared with v2 stack (created by v2 docker-compose)

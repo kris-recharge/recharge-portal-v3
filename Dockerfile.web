@@ -1,0 +1,24 @@
+FROM node:22-slim AS builder
+
+WORKDIR /web
+
+COPY web/package*.json ./
+RUN npm ci
+
+COPY web/ .
+
+# Supabase public keys are safe to bake into the frontend bundle (anon key only)
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_ANON_KEY
+ARG VITE_API_BASE
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+ENV VITE_API_BASE=$VITE_API_BASE
+ENV NODE_ENV=production
+
+RUN npm run build
+
+# Final stage: Caddy serves the static dist directly from the host mount,
+# so this stage is only used for local testing with `docker run`.
+FROM caddy:2-alpine
+COPY --from=builder /web/dist /srv/app

@@ -1,0 +1,27 @@
+# ReCharge Alaska Portal v3 — Caddy routing additions
+#
+# IMPORTANT: Merge these blocks into the existing Caddyfile on the VPS.
+# The v2 block (dashboard.rechargealaska.net) must be preserved unchanged.
+
+www.rechargealaska.net {
+    # ── v3 API (FastAPI) ─────────────────────────────────────────────────────
+    handle /api/* {
+        reverse_proxy rca_api_v3:8000 {
+            header_up Host {host}
+            # Disable buffering for SSE (/api/alerts/stream)
+            flush_interval -1
+        }
+    }
+
+    # ── v3 Frontend (React SPA) ──────────────────────────────────────────────
+    handle /app* {
+        root * /srv/app
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Redirect bare root to /app
+    handle / {
+        redir /app permanent
+    }
+}

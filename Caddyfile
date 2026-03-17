@@ -6,7 +6,7 @@
 www.rechargealaska.net {
     # ── v3 API (FastAPI) ─────────────────────────────────────────────────────
     handle /api/* {
-        reverse_proxy rca_api_v3:8000 {
+        reverse_proxy localhost:8001 {
             header_up Host {host}
             # Disable buffering for SSE (/api/alerts/stream)
             flush_interval -1

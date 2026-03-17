@@ -1,8 +1,10 @@
 version: "3.9"
 
 # ReCharge Alaska Portal v3
-# Extends the existing VPS stack — v2 services are in the separate v2 docker-compose.yml
-# and continue running unchanged.
+# Caddy runs on the VPS host (not in Docker), so:
+#   - API is exposed on host port 8001 (Caddy reverse-proxies to localhost:8001)
+#   - Frontend dist is extracted from rca_web_v3 to /srv/app on the host,
+#     then served directly by host Caddy as static files.
 
 services:
 
@@ -13,27 +15,20 @@ services:
     container_name: rca_api_v3
     restart: unless-stopped
     env_file: .env
-    expose:
-      - "8000"
+    ports:
+      - "127.0.0.1:8001:8000"   # host Caddy proxies to localhost:8001
     networks:
-      - rca_net
+      - rca_net_v3
 
   rca_web_v3:
     build:
       context: .
       dockerfile: Dockerfile.web
     container_name: rca_web_v3
-    restart: unless-stopped
-    # The built dist is served by Caddy on the host — this container just holds
-    # the build artifact. We copy it out via a volume mount for Caddy to serve.
-    volumes:
-      - rca_web_v3_dist:/srv/app
+    restart: "no"               # build artifact only — run once to extract dist
     networks:
-      - rca_net
-
-volumes:
-  rca_web_v3_dist:
+      - rca_net_v3
 
 networks:
-  rca_net:
-    external: true   # shared with v2 stack (created by v2 docker-compose)
+  rca_net_v3:
+    driver: bridge

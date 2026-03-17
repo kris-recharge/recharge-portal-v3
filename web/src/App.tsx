@@ -13,7 +13,7 @@ import { ExportTab }       from './pages/ExportTab'
 import { AlertsTab }       from './pages/AlertsTab'
 import { AdminTab }        from './pages/AdminTab'
 import { AlertBanner }     from './components/AlertBanner'
-import { LogOut, Zap } from 'lucide-react'
+import { LogOut, Zap, Mail } from 'lucide-react'
 
 // DEV: bypass auth so the dashboard is visible during local review
 const DEV_BYPASS_AUTH = import.meta.env.DEV
@@ -47,14 +47,10 @@ export default function App() {
     supabase.auth.getSession().then(({ data }) => {
       setUserEmail(data.session?.user?.email ?? null)
       setLoading(false)
-      if (!data.session) {
-        window.location.href = '/login'
-      }
     })
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUserEmail(session?.user?.email ?? null)
-      if (!session) window.location.href = '/login'
     })
 
     return () => listener.subscription.unsubscribe()
@@ -66,6 +62,10 @@ export default function App() {
         <div className="text-sm text-gray-400">Loading…</div>
       </div>
     )
+  }
+
+  if (!userEmail) {
+    return <LoginScreen />
   }
 
   const isAdmin = userEmail === ADMIN_EMAIL
@@ -128,6 +128,82 @@ export default function App() {
 
       {/* Alert toast overlay */}
       <AlertBanner />
+    </div>
+  )
+}
+
+// ── Login screen (magic link) ──────────────────────────────────────────────────
+function LoginScreen() {
+  const [email,   setEmail]   = useState('')
+  const [sent,    setSent]    = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error,   setError]   = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setLoading(true)
+    setError(null)
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.href },
+    })
+    setLoading(false)
+    if (error) setError(error.message)
+    else setSent(true)
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 w-full max-w-sm">
+        {/* Logo */}
+        <div className="flex items-center gap-2.5 mb-8">
+          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
+            <Zap size={16} className="text-white" />
+          </div>
+          <span className="font-semibold text-gray-900">ReCharge Alaska</span>
+          <span className="text-gray-300 text-xs">v3</span>
+        </div>
+
+        {sent ? (
+          <div className="text-center">
+            <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4">
+              <Mail size={20} className="text-emerald-600" />
+            </div>
+            <h2 className="text-sm font-semibold text-gray-900 mb-1">Check your email</h2>
+            <p className="text-xs text-gray-500">
+              We sent a magic link to <strong>{email}</strong>.<br />
+              Click the link to sign in.
+            </p>
+          </div>
+        ) : (
+          <>
+            <h2 className="text-sm font-semibold text-gray-900 mb-1">Sign in</h2>
+            <p className="text-xs text-gray-500 mb-6">
+              Enter your email and we'll send you a magic link.
+            </p>
+            <form onSubmit={handleSubmit} className="space-y-3">
+              <input
+                type="email"
+                required
+                placeholder="you@rechargealaska.net"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {error && (
+                <p className="text-xs text-red-500">{error}</p>
+              )}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-blue-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {loading ? 'Sending…' : 'Send magic link'}
+              </button>
+            </form>
+          </>
+        )}
+      </div>
     </div>
   )
 }

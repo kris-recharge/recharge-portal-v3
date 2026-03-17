@@ -3,7 +3,7 @@
 # IMPORTANT: Merge these blocks into the existing Caddyfile on the VPS.
 # The v2 block (dashboard.rechargealaska.net) must be preserved unchanged.
 
-portal.rechargealaska.net {
+dashboard.rechargealaska.net {
     # ── v3 API (FastAPI) ─────────────────────────────────────────────────────
     handle /api/* {
         reverse_proxy localhost:8001 {

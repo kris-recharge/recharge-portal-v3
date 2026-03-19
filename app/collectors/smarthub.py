@@ -119,7 +119,14 @@ class SmartHubCollector(AbstractCollector):
         }
 
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=body)
+            resp = await client.post(
+                url,
+                json=body,
+                headers={
+                    "Content-Type": "application/json;charset=UTF-8",
+                    "Accept": "application/json, text/plain, */*",
+                },
+            )
 
         if resp.status_code != 200:
             raise RuntimeError(

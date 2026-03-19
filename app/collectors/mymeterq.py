@@ -63,7 +63,7 @@ from .base import AbstractCollector
 logger = logging.getLogger("rca.collectors.mymeterq")
 
 _BASE      = "https://myaccount.chugachelectric.com"
-_LOGIN_URL = f"{_BASE}/Account/Login"
+_LOGIN_URL = f"{_BASE}/User/LogIn"
 _SET_GROUP = f"{_BASE}/Dashboard/SetMeterGroup"
 _DATA_URL  = f"{_BASE}/Dashboard/ChartData"
 
@@ -112,7 +112,7 @@ class MyMeterQCollector(AbstractCollector):
     async def _login(self, client: httpx.AsyncClient) -> None:
         """Obtain a session cookie via the mymeterQ login form."""
         # GET the login page first to capture the CSRF __RequestVerificationToken
-        resp = await client.get("/Account/Login")
+        resp = await client.get("/User/LogIn")
         resp.raise_for_status()
 
         token = self._extract_csrf(resp.text)
@@ -129,11 +129,11 @@ class MyMeterQCollector(AbstractCollector):
         if token:
             payload["__RequestVerificationToken"] = token
 
-        resp = await client.post("/Account/Login", data=payload)
+        resp = await client.post("/User/LogIn", data=payload)
         resp.raise_for_status()
 
-        # A successful login redirects to /Dashboard; check we're not still on /Login
-        if "/Account/Login" in str(resp.url):
+        # A successful login redirects to /Dashboard; check we're not still on /LogIn
+        if "/User/LogIn" in str(resp.url):
             raise RuntimeError(
                 "mymeterQ login failed — still on login page. "
                 "Check credentials for CEA account."

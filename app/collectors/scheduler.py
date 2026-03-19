@@ -48,7 +48,7 @@ async def run_all_collectors(days_back: int = 2) -> None:
 
     Called by the scheduler and exposed for manual trigger via the API.
     """
-    pool = get_pool()
+    pool = await get_pool()
 
     # Load enabled accounts + their credentials in one query
     async with pool.acquire() as conn:

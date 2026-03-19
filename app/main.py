@@ -94,9 +94,8 @@ CREATE INDEX IF NOT EXISTS idx_utility_usage_lookup
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
     logger.info("Starting ReCharge Alaska Portal v3")
-    await create_pool()
-    from .db import get_pool
-    async with get_pool().acquire() as conn:
+    pool = await create_pool()
+    async with pool.acquire() as conn:
         await conn.execute(_MIGRATION_SQL)
     logger.info("DB migration complete")
     start_alert_thread()

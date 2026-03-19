@@ -62,10 +62,11 @@ from .base import AbstractCollector
 
 logger = logging.getLogger("rca.collectors.mymeterq")
 
-_BASE      = "https://myaccount.chugachelectric.com"
-_LOGIN_URL = f"{_BASE}/User/LogIn"
-_SET_GROUP = f"{_BASE}/Dashboard/SetMeterGroup"
-_DATA_URL  = f"{_BASE}/Dashboard/ChartData"
+_BASE       = "https://myaccount.chugachelectric.com"
+_LOGIN_FORM = f"{_BASE}/"            # GET root to obtain login form + CSRF token
+_LOGIN_POST = f"{_BASE}/Home/Login"  # POST target from the login form action
+_SET_GROUP  = f"{_BASE}/Dashboard/SetMeterGroup"
+_DATA_URL   = f"{_BASE}/Dashboard/ChartData"
 
 # One-hour query windows; CEA returns hourly data for a 1-day range.
 _QUERY_HOURS = 23           # 23-hour window matches CEA's "1d" quick-pick
@@ -110,9 +111,15 @@ class MyMeterQCollector(AbstractCollector):
     # ── Private helpers ───────────────────────────────────────────────────────
 
     async def _login(self, client: httpx.AsyncClient) -> None:
-        """Obtain a session cookie via the mymeterQ login form."""
-        # GET the login page first to capture the CSRF __RequestVerificationToken
-        resp = await client.get("/User/LogIn")
+        """Obtain a session cookie via the mymeterQ login form.
+
+        Auth flow:
+          1. GET / — returns the login page; grab __RequestVerificationToken
+          2. POST /Home/Login — form fields: LoginEmail, LoginPassword, token
+          3. Server redirects to /Dashboard on success
+        """
+        # Step 1: GET root to retrieve login form + CSRF token
+        resp = await client.get("/")
         resp.raise_for_status()
 
         token = self._extract_csrf(resp.text)
@@ -122,23 +129,25 @@ class MyMeterQCollector(AbstractCollector):
                 "proceeding without it (may fail)"
             )
 
+        # Step 2: POST to /Home/Login with correct field names
         payload = {
-            "UserName": self.credentials["username"],
-            "Password": self.credentials["password"],
+            "LoginEmail":    self.credentials["username"],
+            "LoginPassword": self.credentials["password"],
         }
         if token:
             payload["__RequestVerificationToken"] = token
 
-        resp = await client.post("/User/LogIn", data=payload)
+        resp = await client.post("/Home/Login", data=payload)
         resp.raise_for_status()
 
-        # A successful login redirects to /Dashboard; check we're not still on /LogIn
-        if "/User/LogIn" in str(resp.url):
+        # Success: server redirects to /Dashboard; failure stays at root or /Home/Login
+        final = str(resp.url)
+        if "/Home/Login" in final or (final.rstrip("/") == _BASE.rstrip("/")):
             raise RuntimeError(
                 "mymeterQ login failed — still on login page. "
                 "Check credentials for CEA account."
             )
-        self.log.debug("mymeterQ login OK")
+        self.log.debug("mymeterQ login OK — landed at %s", final)
 
     async def _set_account(self, client: httpx.AsyncClient) -> None:
         """Switch the server-side session to the correct meter group."""

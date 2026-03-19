@@ -34,6 +34,7 @@ The collector tries both shapes and normalises to (interval_start_ms, kwh).
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -118,14 +119,18 @@ class SmartHubCollector(AbstractCollector):
             "targetPage": 1,
         }
 
+        # Use content= (raw bytes) instead of json= so we control Content-Type exactly.
+        # SmartHub rejects requests without charset=UTF-8 in the Content-Type header.
+        _HEADERS = {
+            "Content-Type": "application/json;charset=UTF-8",
+            "Accept":       "application/json, text/plain, */*",
+            "User-Agent":   "Mozilla/5.0 (compatible; RCACollector/3.0)",
+        }
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 url,
-                json=body,
-                headers={
-                    "Content-Type": "application/json;charset=UTF-8",
-                    "Accept": "application/json, text/plain, */*",
-                },
+                content=json.dumps(body).encode("utf-8"),
+                headers=_HEADERS,
             )
 
         if resp.status_code != 200:

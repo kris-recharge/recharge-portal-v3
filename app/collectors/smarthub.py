@@ -34,7 +34,6 @@ The collector tries both shapes and normalises to (interval_start_ms, kwh).
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -111,26 +110,26 @@ class SmartHubCollector(AbstractCollector):
     # ── Private helpers ───────────────────────────────────────────────────────
 
     async def _login(self) -> str:
-        """POST to /services/oauth/auth and return the authorizationToken."""
-        url  = f"{self._base}/services/oauth/auth"
-        body = {
-            "username":   self.credentials["username"],
-            "password":   self.credentials["password"],
-            "targetPage": 1,
-        }
+        """POST to /services/oauth/auth/v2 and return the authorizationToken.
 
-        # Use content= (raw bytes) instead of json= so we control Content-Type exactly.
-        # SmartHub rejects requests without charset=UTF-8 in the Content-Type header.
-        _HEADERS = {
-            "Content-Type": "application/json;charset=UTF-8",
-            "Accept":       "application/json, text/plain, */*",
-            "User-Agent":   "Mozilla/5.0 (compatible; RCACollector/3.0)",
-        }
+        SmartHub upgraded from a JSON endpoint (/v1) to a form-encoded endpoint (/v2).
+        Field name changed from 'username' to 'userId'.
+        Content-Type must be application/x-www-form-urlencoded.
+        Response still contains authorizationToken.
+        """
+        url = f"{self._base}/services/oauth/auth/v2"
+
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 url,
-                content=json.dumps(body).encode("utf-8"),
-                headers=_HEADERS,
+                data={
+                    "userId":   self.credentials["username"],
+                    "password": self.credentials["password"],
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept":       "application/json, text/plain, */*",
+                },
             )
 
         if resp.status_code != 200:

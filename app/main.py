@@ -87,6 +87,10 @@ CREATE TABLE IF NOT EXISTS utility_usage (
 
 CREATE INDEX IF NOT EXISTS idx_utility_usage_lookup
     ON utility_usage (utility, account_number, interval_start DESC);
+
+-- ── RLS: lock down credentials table ─────────────────────────────────────────
+-- Enable RLS — service role bypasses automatically; anon/authenticated are denied.
+ALTER TABLE utility_credentials ENABLE ROW LEVEL SECURITY;
 """
 
 

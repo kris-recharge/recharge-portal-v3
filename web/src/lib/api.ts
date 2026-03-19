@@ -373,3 +373,98 @@ export function fetchConnectivityHistory(params: {
   params.station_id?.forEach(s => q.append('station_id', s))
   return apiFetch<ConnectivityHistoryResponse>(`/api/connectivity/history?${q}`)
 }
+
+// ── Utility Accounts & Credentials ────────────────────────────────────────────
+
+export type UtilityName = 'gvea' | 'cvea' | 'cea'
+
+export const UTILITY_LABELS: Record<UtilityName, string> = {
+  gvea: 'GVEA (SmartHub)',
+  cvea: 'CVEA (SmartHub)',
+  cea:  'CEA (mymeterQ)',
+}
+
+export interface UtilityAccount {
+  id: number
+  utility: UtilityName
+  account_number: string
+  display_name: string
+  service_location_number: string | null
+  customer_number: string | null
+  system_of_record: string
+  meter_group_id: string | null
+  enabled: boolean
+  last_collected: string | null
+  last_error: string | null
+  created_at: string
+}
+
+export interface UtilityCredential {
+  utility: UtilityName
+  username: string
+  updated_at: string
+}
+
+export interface UtilityUsageRow {
+  utility: string
+  account_number: string
+  meter_id: string | null
+  interval_start: string
+  interval_end: string
+  kwh: number | null
+  is_estimated: boolean
+  granularity_min: number
+  collected_at: string
+}
+
+// Accounts
+export const fetchUtilityAccounts = (): Promise<UtilityAccount[]> =>
+  apiFetch<UtilityAccount[]>('/api/utility/accounts')
+
+export const createUtilityAccount = (body: {
+  utility: string
+  account_number: string
+  display_name?: string
+  service_location_number?: string | null
+  customer_number?: string | null
+  meter_group_id?: string | null
+  enabled?: boolean
+}): Promise<UtilityAccount> =>
+  apiFetch<UtilityAccount>('/api/utility/accounts', {
+    method: 'POST', body: JSON.stringify(body),
+  })
+
+export const updateUtilityAccount = (
+  id: number,
+  body: Partial<{
+    display_name: string
+    service_location_number: string | null
+    customer_number: string | null
+    meter_group_id: string | null
+    enabled: boolean
+  }>,
+): Promise<UtilityAccount> =>
+  apiFetch<UtilityAccount>(`/api/utility/accounts/${id}`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  })
+
+export const deleteUtilityAccount = (id: number): Promise<void> =>
+  apiFetch<void>(`/api/utility/accounts/${id}`, { method: 'DELETE' })
+
+// Credentials
+export const fetchUtilityCredentials = (): Promise<UtilityCredential[]> =>
+  apiFetch<UtilityCredential[]>('/api/utility/credentials')
+
+export const upsertUtilityCredentials = (
+  utility: string,
+  body: { username: string; password: string },
+): Promise<UtilityCredential> =>
+  apiFetch<UtilityCredential>(`/api/utility/credentials/${utility}`, {
+    method: 'PUT', body: JSON.stringify(body),
+  })
+
+// Manual collection trigger
+export const triggerUtilityCollect = (days_back = 2): Promise<{ ok: boolean; message: string }> =>
+  apiFetch('/api/utility/collect', {
+    method: 'POST', body: JSON.stringify({ days_back }),
+  })

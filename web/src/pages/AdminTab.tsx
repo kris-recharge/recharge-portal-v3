@@ -10,7 +10,11 @@ import {
   fetchAdminUsers,    createAdminUser,    updateAdminUser,
   fetchAdminPricing,  createAdminPricing, updateAdminPricing,
   fetchAdminEvse,     fetchAdminUnidentifiedEvse, upsertAdminEvse,
+  fetchUtilityAccounts, createUtilityAccount, updateUtilityAccount, deleteUtilityAccount,
+  fetchUtilityCredentials, upsertUtilityCredentials, triggerUtilityCollect,
+  UTILITY_LABELS,
   type AdminUser, type AdminPricing, type AdminEvse, type AdminUnidentifiedEvse,
+  type UtilityAccount, type UtilityCredential, type UtilityName,
 } from '../lib/api'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -542,6 +546,329 @@ function PricingSection() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// Utility Accounts Section
+// ════════════════════════════════════════════════════════════════════════════════
+
+const UTILITY_OPTIONS: UtilityName[] = ['gvea', 'cvea', 'cea']
+
+/** Fields that differ per utility — shown/hidden in the Add Account form */
+const UTILITY_FIELDS: Record<UtilityName, { srvLoc: boolean; custNbr: boolean; meterGroup: boolean }> = {
+  gvea: { srvLoc: true,  custNbr: true,  meterGroup: false },
+  cvea: { srvLoc: true,  custNbr: true,  meterGroup: false },
+  cea:  { srvLoc: false, custNbr: false, meterGroup: true  },
+}
+
+function fmtCollected(iso: string | null): string {
+  if (!iso) return 'Never'
+  const d = new Date(iso)
+  return d.toLocaleString('en-US', {
+    timeZone: 'America/Anchorage', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  })
+}
+
+function UtilityAccountsSection() {
+  const qc = useQueryClient()
+
+  const { data: accounts = [], isLoading: acctLoading } =
+    useQuery({ queryKey: ['utility-accounts'], queryFn: fetchUtilityAccounts })
+
+  const { data: creds = [], isLoading: credsLoading } =
+    useQuery({ queryKey: ['utility-credentials'], queryFn: fetchUtilityCredentials })
+
+  // ── Add account form state ─────────────────────────────────────────────────
+  const blankAcct = {
+    utility: 'gvea' as UtilityName, account_number: '', display_name: '',
+    service_location_number: '', customer_number: '', meter_group_id: '',
+  }
+  const [acctForm, setAcctForm] = useState(blankAcct)
+  const [acctStatus, setAcctStatus] = useState({ ok: true, msg: '' })
+
+  const addAccount = useMutation({
+    mutationFn: () => createUtilityAccount({
+      utility:                 acctForm.utility,
+      account_number:          acctForm.account_number.trim(),
+      display_name:            acctForm.display_name.trim(),
+      service_location_number: acctForm.service_location_number.trim() || null,
+      customer_number:         acctForm.customer_number.trim() || null,
+      meter_group_id:          acctForm.meter_group_id.trim() || null,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['utility-accounts'] })
+      setAcctForm(blankAcct)
+      setAcctStatus({ ok: true, msg: 'Account added!' })
+    },
+    onError: (e: Error) => setAcctStatus({ ok: false, msg: e.message }),
+  })
+
+  // ── Credentials form state ─────────────────────────────────────────────────
+  const blankCred = { utility: 'gvea' as UtilityName, username: '', password: '' }
+  const [credForm, setCredForm] = useState(blankCred)
+  const [credStatus, setCredStatus] = useState({ ok: true, msg: '' })
+
+  const saveCred = useMutation({
+    mutationFn: () => upsertUtilityCredentials(credForm.utility, {
+      username: credForm.username, password: credForm.password,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['utility-credentials'] })
+      setCredForm(blankCred)
+      setCredStatus({ ok: true, msg: 'Credentials saved!' })
+    },
+    onError: (e: Error) => setCredStatus({ ok: false, msg: e.message }),
+  })
+
+  // ── Manual collect trigger ─────────────────────────────────────────────────
+  const [collectMsg, setCollectMsg] = useState('')
+  const triggerCollect = useMutation({
+    mutationFn: () => triggerUtilityCollect(2),
+    onSuccess: (r) => {
+      setCollectMsg(r.message)
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['utility-accounts'] })
+        setCollectMsg('')
+      }, 4000)
+    },
+    onError: (e: Error) => setCollectMsg(`Error: ${e.message}`),
+  })
+
+  const fields = UTILITY_FIELDS[acctForm.utility]
+
+  const inputCls = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+  const btnPrimary = 'px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors'
+  const btnDanger  = 'px-2 py-1 bg-red-50 text-red-600 text-xs rounded hover:bg-red-100 transition-colors'
+  const btnSecondary = 'px-3 py-1.5 border border-gray-300 text-gray-700 text-xs rounded-lg hover:bg-gray-50 transition-colors'
+
+  // Group creds by utility for quick lookup
+  const credMap = Object.fromEntries(creds.map(c => [c.utility, c]))
+
+  return (
+    <div className="space-y-8">
+
+      {/* ── Account table ───────────────────────────────────────────────── */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-gray-700">Configured Accounts</h3>
+          <button
+            className={btnSecondary + ' flex items-center gap-1.5'}
+            disabled={triggerCollect.isPending}
+            onClick={() => triggerCollect.mutate()}
+          >
+            <RefreshCw size={13} className={triggerCollect.isPending ? 'animate-spin' : ''} />
+            {triggerCollect.isPending ? 'Collecting…' : 'Collect Now'}
+          </button>
+        </div>
+        {collectMsg && (
+          <p className="text-xs text-blue-600 mb-2">{collectMsg}</p>
+        )}
+        {acctLoading ? (
+          <div className="h-20 bg-gray-100 rounded-lg animate-pulse" />
+        ) : accounts.length === 0 ? (
+          <p className="text-sm text-gray-400 italic">No accounts configured yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-gray-500">
+                  <th className="pb-2 pr-4 font-medium">Utility</th>
+                  <th className="pb-2 pr-4 font-medium">Account #</th>
+                  <th className="pb-2 pr-4 font-medium">Site Name</th>
+                  <th className="pb-2 pr-4 font-medium">Last Collected</th>
+                  <th className="pb-2 pr-4 font-medium">Status</th>
+                  <th className="pb-2 pr-4 font-medium">Enabled</th>
+                  <th className="pb-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {accounts.map(a => (
+                  <AccountRow
+                    key={a.id}
+                    account={a}
+                    onToggle={(enabled) => updateUtilityAccount(a.id, { enabled })
+                      .then(() => qc.invalidateQueries({ queryKey: ['utility-accounts'] }))}
+                    onDelete={() => {
+                      if (!confirm(`Delete ${a.utility}/${a.account_number}?`)) return
+                      deleteUtilityAccount(a.id)
+                        .then(() => qc.invalidateQueries({ queryKey: ['utility-accounts'] }))
+                    }}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Add account form ─────────────────────────────────────────────── */}
+      <div className="border border-gray-200 rounded-xl p-5 space-y-4">
+        <h3 className="text-sm font-semibold text-gray-700">Add Account</h3>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          <Field label="Utility *">
+            <select
+              className={inputCls}
+              value={acctForm.utility}
+              onChange={e => setAcctForm(f => ({ ...f, utility: e.target.value as UtilityName }))}
+            >
+              {UTILITY_OPTIONS.map(u => (
+                <option key={u} value={u}>{UTILITY_LABELS[u]}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Account Number *">
+            <input className={inputCls} placeholder="e.g. 641977"
+              value={acctForm.account_number}
+              onChange={e => setAcctForm(f => ({ ...f, account_number: e.target.value }))} />
+          </Field>
+          <Field label="Display Name">
+            <input className={inputCls} placeholder="e.g. Delta Junction EVSE"
+              value={acctForm.display_name}
+              onChange={e => setAcctForm(f => ({ ...f, display_name: e.target.value }))} />
+          </Field>
+          {fields.srvLoc && (
+            <Field label="Service Location #">
+              <input className={inputCls} placeholder="e.g. 637330"
+                value={acctForm.service_location_number}
+                onChange={e => setAcctForm(f => ({ ...f, service_location_number: e.target.value }))} />
+            </Field>
+          )}
+          {fields.custNbr && (
+            <Field label="Customer Number">
+              <input className={inputCls} placeholder="e.g. 6159"
+                value={acctForm.customer_number}
+                onChange={e => setAcctForm(f => ({ ...f, customer_number: e.target.value }))} />
+            </Field>
+          )}
+          {fields.meterGroup && (
+            <Field label="Meter Group ID">
+              <input className={inputCls} placeholder="e.g. 365681"
+                value={acctForm.meter_group_id}
+                onChange={e => setAcctForm(f => ({ ...f, meter_group_id: e.target.value }))} />
+            </Field>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            className={btnPrimary}
+            disabled={!acctForm.account_number.trim() || addAccount.isPending}
+            onClick={() => { setAcctStatus({ ok: true, msg: '' }); addAccount.mutate() }}
+          >
+            {addAccount.isPending ? 'Adding…' : 'Add Account'}
+          </button>
+          <StatusMsg {...acctStatus} />
+        </div>
+      </div>
+
+      {/* ── Credentials ──────────────────────────────────────────────────── */}
+      <div className="border border-gray-200 rounded-xl p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700">Login Credentials</h3>
+          <p className="text-xs text-gray-400 mt-0.5">
+            One login per utility — used by the automated collector. Passwords are stored server-side only.
+          </p>
+        </div>
+
+        {/* Current creds status */}
+        {!credsLoading && (
+          <div className="flex gap-3 flex-wrap">
+            {UTILITY_OPTIONS.map(u => {
+              const c = credMap[u]
+              return (
+                <div key={u} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-gray-200">
+                  {c
+                    ? <><CheckCircle size={12} className="text-green-500" /><span className="text-gray-700">{UTILITY_LABELS[u]}: <span className="font-medium">{c.username}</span></span></>
+                    : <><AlertCircle size={12} className="text-amber-500" /><span className="text-gray-500">{UTILITY_LABELS[u]}: not set</span></>
+                  }
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Set/update credentials form */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <Field label="Utility *">
+            <select
+              className={inputCls}
+              value={credForm.utility}
+              onChange={e => setCredForm(f => ({ ...f, utility: e.target.value as UtilityName }))}
+            >
+              {UTILITY_OPTIONS.map(u => (
+                <option key={u} value={u}>{UTILITY_LABELS[u]}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Username / Email *">
+            <input className={inputCls} type="email" placeholder="user@example.com"
+              autoComplete="off"
+              value={credForm.username}
+              onChange={e => setCredForm(f => ({ ...f, username: e.target.value }))} />
+          </Field>
+          <Field label="Password *">
+            <input className={inputCls} type="password" placeholder="••••••••"
+              autoComplete="new-password"
+              value={credForm.password}
+              onChange={e => setCredForm(f => ({ ...f, password: e.target.value }))} />
+          </Field>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            className={btnPrimary}
+            disabled={!credForm.username || !credForm.password || saveCred.isPending}
+            onClick={() => { setCredStatus({ ok: true, msg: '' }); saveCred.mutate() }}
+          >
+            {saveCred.isPending ? 'Saving…' : `Save ${UTILITY_LABELS[credForm.utility]} Credentials`}
+          </button>
+          <StatusMsg {...credStatus} />
+        </div>
+      </div>
+
+    </div>
+  )
+}
+
+function AccountRow({
+  account: a,
+  onToggle,
+  onDelete,
+}: {
+  account: UtilityAccount
+  onToggle: (enabled: boolean) => void
+  onDelete: () => void
+}) {
+  return (
+    <tr className="border-b border-gray-100 hover:bg-gray-50">
+      <td className="py-2 pr-4">
+        <span className="font-medium text-gray-700">{UTILITY_LABELS[a.utility] ?? a.utility}</span>
+      </td>
+      <td className="py-2 pr-4 font-mono text-gray-600">{a.account_number}</td>
+      <td className="py-2 pr-4 text-gray-600">{a.display_name || <span className="text-gray-300 italic">—</span>}</td>
+      <td className="py-2 pr-4 text-gray-500">{fmtCollected(a.last_collected)}</td>
+      <td className="py-2 pr-4">
+        {a.last_error
+          ? <span className="text-red-500 flex items-center gap-1"><AlertCircle size={11} /> Error</span>
+          : a.last_collected
+            ? <span className="text-green-600 flex items-center gap-1"><CheckCircle size={11} /> OK</span>
+            : <span className="text-gray-400">—</span>
+        }
+      </td>
+      <td className="py-2 pr-4">
+        <button
+          onClick={() => onToggle(!a.enabled)}
+          className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${a.enabled ? 'bg-blue-600' : 'bg-gray-200'}`}
+        >
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${a.enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+        </button>
+      </td>
+      <td className="py-2">
+        <button onClick={onDelete} className="px-2 py-1 text-xs text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors">
+          Remove
+        </button>
+      </td>
+    </tr>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // Main export
 // ════════════════════════════════════════════════════════════════════════════════
 
@@ -562,6 +889,10 @@ export function AdminTab() {
 
       <Section title="Pricing" defaultOpen={false}>
         <PricingSection />
+      </Section>
+
+      <Section title="Utility Data Collection" defaultOpen={false}>
+        <UtilityAccountsSection />
       </Section>
     </div>
   )

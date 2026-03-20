@@ -178,8 +178,8 @@ class SmartHubCollector(AbstractCollector):
 
         url     = f"{self._base}/services/secured/utility-usage/poll"
         headers = {
-            "Content-Type":     "application/json",
-            "authorizationToken": token,
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {token}",
         }
 
         async with httpx.AsyncClient(timeout=60) as client:

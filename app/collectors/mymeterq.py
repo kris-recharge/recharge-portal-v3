@@ -142,10 +142,19 @@ class MyMeterQCollector(AbstractCollector):
 
         # Success: server redirects to /Dashboard; failure stays at root or /Home/Login
         final = str(resp.url)
+        self.log.info("mymeterQ login POST → final URL: %s", final)
         if "/Home/Login" in final or (final.rstrip("/") == _BASE.rstrip("/")):
+            # Grab any error message from the response HTML for easier debugging
+            error_hint = ""
+            for phrase in ["Invalid", "incorrect", "not found", "error", "failed"]:
+                idx = resp.text.lower().find(phrase.lower())
+                if idx != -1:
+                    error_hint = resp.text[max(0, idx-20):idx+80].strip()
+                    break
             raise RuntimeError(
-                "mymeterQ login failed — still on login page. "
-                "Check credentials for CEA account."
+                f"mymeterQ login failed — still on login page (final={final}). "
+                f"Hint: {error_hint!r}. Check CEA credentials (LoginEmail must be "
+                f"the exact email address registered with CEA)."
             )
         self.log.debug("mymeterQ login OK — landed at %s", final)
 

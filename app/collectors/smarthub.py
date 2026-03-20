@@ -94,8 +94,8 @@ class SmartHubCollector(AbstractCollector):
         )
 
         try:
-            token = await self._login()
-            rows  = await self._fetch_usage(token, days_back)
+            token, username = await self._login()
+            rows  = await self._fetch_usage(token, username, days_back)
             n     = await self.upsert_usage(pool, rows)
             await self.mark_collected(pool, error=None)
             self.log.info("SmartHub collect done: %d rows upserted", n)
@@ -109,21 +109,20 @@ class SmartHubCollector(AbstractCollector):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    async def _login(self) -> str:
-        """POST to /services/oauth/auth/v2 and return the authorizationToken.
+    async def _login(self) -> tuple[str, str]:
+        """POST to /services/oauth/auth/v2, then fetch accounts list.
 
-        SmartHub upgraded from a JSON endpoint (/v1) to a form-encoded endpoint (/v2).
-        Field name changed from 'username' to 'userId'.
-        Content-Type must be application/x-www-form-urlencoded.
-        Response still contains authorizationToken.
+        Returns (authorizationToken, username) so the poll can add the
+        Username header that the browser interceptor always injects.
         """
         url = f"{self._base}/services/oauth/auth/v2"
+        username = self.credentials["username"]
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 url,
                 data={
-                    "userId":   self.credentials["username"],
+                    "userId":   username,
                     "password": self.credentials["password"],
                 },
                 headers={
@@ -132,25 +131,41 @@ class SmartHubCollector(AbstractCollector):
                 },
             )
 
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"SmartHub login failed for {self.utility}: "
-                f"HTTP {resp.status_code} — {resp.text[:200]}"
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"SmartHub login failed for {self.utility}: "
+                    f"HTTP {resp.status_code} — {resp.text[:200]}"
+                )
+
+            data = resp.json()
+            token = data.get("authorizationToken") or data.get("token")
+            if not token:
+                raise RuntimeError(
+                    f"SmartHub login response missing authorizationToken: {data}"
+                )
+            self.log.info(
+                "SmartHub login OK for %s (user=%s, token_len=%d)",
+                self.utility, username, len(token),
             )
 
-        data = resp.json()
-        # Log full response (minus sensitive fields) so we can see account list
-        safe = {k: v for k, v in data.items() if k not in ("authorizationToken", "token", "password")}
-        self.log.info("SmartHub login response keys/data: %s", safe)
-        token = data.get("authorizationToken") or data.get("token")
-        if not token:
-            raise RuntimeError(
-                f"SmartHub login response missing authorizationToken: {data}"
+            # Fetch accounts list — tells us the actual account IDs in SmartHub
+            auth_headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept":        "application/json, text/plain, */*",
+                "Username":      username,
+            }
+            acct_resp = await client.get(
+                f"{self._base}/services/secured/accounts",
+                headers=auth_headers,
             )
-        self.log.info("SmartHub login OK for %s — token length %d", self.utility, len(token))
-        return token
+            self.log.info(
+                "SmartHub /accounts → HTTP %d: %s",
+                acct_resp.status_code, acct_resp.text[:600],
+            )
 
-    async def _fetch_usage(self, token: str, days_back: int) -> list[dict]:
+        return token, username
+
+    async def _fetch_usage(self, token: str, username: str, days_back: int) -> list[dict]:
         """Call the poll endpoint and return normalised usage rows."""
         acct       = self.account
         time_frame = PREFERRED_TIMEFRAME.get(self.utility, "DAILY")
@@ -185,6 +200,7 @@ class SmartHubCollector(AbstractCollector):
         headers = {
             "Content-Type":  "application/json",
             "Authorization": f"Bearer {token}",
+            "Username":      username,   # browser interceptor always adds this
         }
 
         self.log.info("SmartHub poll body: %s", body)

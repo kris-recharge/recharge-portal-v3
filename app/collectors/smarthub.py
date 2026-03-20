@@ -170,11 +170,13 @@ class SmartHubCollector(AbstractCollector):
             "includeInactive":  False,
         }
 
-        # Optional SmartHub-specific fields
-        if acct.get("service_location_number"):
-            body["serviceLocationNumber"] = acct["service_location_number"]
-        if acct.get("customer_number"):
-            body["customerNumber"] = acct["customer_number"]
+        # Optional SmartHub-specific fields — only include if purely numeric
+        sln = acct.get("service_location_number") or ""
+        if sln.strip().isdigit():
+            body["serviceLocationNumber"] = sln.strip()
+        cust = acct.get("customer_number") or ""
+        if cust.strip():
+            body["customerNumber"] = cust.strip()
 
         url     = f"{self._base}/services/secured/utility-usage/poll"
         headers = {
@@ -182,6 +184,7 @@ class SmartHubCollector(AbstractCollector):
             "Authorization": f"Bearer {token}",
         }
 
+        self.log.info("SmartHub poll body: %s", body)
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(url, json=body, headers=headers)
 

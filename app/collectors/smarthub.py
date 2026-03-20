@@ -139,12 +139,15 @@ class SmartHubCollector(AbstractCollector):
             )
 
         data = resp.json()
+        # Log full response (minus sensitive fields) so we can see account list
+        safe = {k: v for k, v in data.items() if k not in ("authorizationToken", "token", "password")}
+        self.log.info("SmartHub login response keys/data: %s", safe)
         token = data.get("authorizationToken") or data.get("token")
         if not token:
             raise RuntimeError(
                 f"SmartHub login response missing authorizationToken: {data}"
             )
-        self.log.debug("SmartHub login OK for %s", self.utility)
+        self.log.info("SmartHub login OK for %s — token length %d", self.utility, len(token))
         return token
 
     async def _fetch_usage(self, token: str, days_back: int) -> list[dict]:

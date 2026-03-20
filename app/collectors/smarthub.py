@@ -148,7 +148,7 @@ class SmartHubCollector(AbstractCollector):
                 self.utility, username, len(token),
             )
 
-            # Fetch accounts list with correct NISC header names
+            # Fetch accounts list — requires ?user= query param
             auth_headers = {
                 "Authorization":              f"Bearer {token}",
                 "Accept":                     "application/json, text/plain, */*",
@@ -157,11 +157,15 @@ class SmartHubCollector(AbstractCollector):
             acct_resp = await client.get(
                 f"{self._base}/services/secured/accounts",
                 headers=auth_headers,
+                params={"user": username},
             )
             self.log.info(
                 "SmartHub /accounts → HTTP %d: %s",
-                acct_resp.status_code, acct_resp.text[:600],
+                acct_resp.status_code, acct_resp.text[:800],
             )
+            # Also log response headers for cookie/session debugging
+            self.log.info("SmartHub login resp cookies: %s", dict(resp.cookies))
+            self.log.info("SmartHub /accounts resp cookies: %s", dict(acct_resp.cookies))
 
         return token, username
 

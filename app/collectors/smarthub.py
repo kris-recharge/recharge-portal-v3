@@ -148,11 +148,11 @@ class SmartHubCollector(AbstractCollector):
                 self.utility, username, len(token),
             )
 
-            # Fetch accounts list — tells us the actual account IDs in SmartHub
+            # Fetch accounts list with correct NISC header names
             auth_headers = {
-                "Authorization": f"Bearer {token}",
-                "Accept":        "application/json, text/plain, */*",
-                "Username":      username,
+                "Authorization":              f"Bearer {token}",
+                "Accept":                     "application/json, text/plain, */*",
+                "X-NISC-SMARTHUB-USERNAME":   username,
             }
             acct_resp = await client.get(
                 f"{self._base}/services/secured/accounts",
@@ -198,10 +198,14 @@ class SmartHubCollector(AbstractCollector):
 
         url     = f"{self._base}/services/secured/utility-usage/poll"
         headers = {
-            "Content-Type":  "application/json",
-            "Authorization": f"Bearer {token}",
-            "Username":      username,   # browser interceptor always adds this
+            "Content-Type":               "application/json",
+            "Authorization":              f"Bearer {token}",
+            "X-NISC-SMARTHUB-USERNAME":   username,
         }
+        # Add customer number header if we have one
+        cust_nbr = (acct.get("customer_number") or "").strip()
+        if cust_nbr:
+            headers["X-NISC-SMARTHUB-CUSTOMERNUMBER"] = cust_nbr
 
         self.log.info("SmartHub poll body: %s", body)
         async with httpx.AsyncClient(timeout=60) as client:

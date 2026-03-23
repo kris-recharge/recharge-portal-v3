@@ -79,13 +79,14 @@ async def export_sessions(
                        AND mv2.transaction_id = m.transaction_id
                        AND mv2.soc IS NOT NULL
                      ORDER BY mv2.ts ASC LIMIT 1)           AS soc_start,
-                    -- second SoC reading (used to skip bogus leading 0%)
+                    -- first non-zero SoC reading (used to skip bogus leading 0%)
                     (SELECT mv2.soc FROM meter_values_parsed mv2
                      WHERE mv2.station_id    = m.station_id
                        AND mv2.connector_id  = m.connector_id
                        AND mv2.transaction_id = m.transaction_id
                        AND mv2.soc IS NOT NULL
-                     ORDER BY mv2.ts ASC LIMIT 1 OFFSET 1)  AS soc_second,
+                       AND mv2.soc > 0
+                     ORDER BY mv2.ts ASC LIMIT 1)           AS soc_first_nonzero,
                     -- last SoC reading
                     (SELECT mv2.soc FROM meter_values_parsed mv2
                      WHERE mv2.station_id    = m.station_id
@@ -201,16 +202,25 @@ async def export_sessions(
             if (p_kwh or c_fee) else ""
         )
 
-        # SoC start: skip leading bogus 0% — if first=0 and second>1%, use second
-        soc_start_raw = r["soc_start"]
-        soc_second    = r["soc_second"]
-        if (
-            soc_start_raw is not None
-            and float(soc_start_raw) == 0.0
-            and soc_second is not None
-            and float(soc_second) > 1.0
-        ):
-            soc_start_raw = soc_second
+        # SoC — mirror _resolve_soc() from sessions.py:
+        # 1. Scale normalisation: chargers that report 0-1 fraction instead of 0-100
+        soc_start_raw     = r["soc_start"]
+        soc_first_nonzero = r["soc_first_nonzero"]
+        soc_end_raw       = r["soc_end"]
+        ref = soc_end_raw if soc_end_raw is not None else soc_start_raw
+        scale = 100.0 if (ref is not None and float(ref) <= 1.0) else 1.0
+
+        soc_end_val = round(float(soc_end_raw) * scale, 1) if soc_end_raw is not None else None
+
+        # 2. Bogus-zero filter: skip leading 0% readings if first non-zero > 1.5%
+        soc_start_val: float | None = None
+        if soc_start_raw is not None:
+            soc_start_val = float(soc_start_raw) * scale
+            if soc_start_val == 0.0 and soc_first_nonzero is not None:
+                nonzero_val = float(soc_first_nonzero) * scale
+                if nonzero_val > 1.5:
+                    soc_start_val = nonzero_val
+            soc_start_val = round(soc_start_val, 1)
 
         data_rows.append([
             _fmt_ak(start_dt),
@@ -222,8 +232,8 @@ async def export_sessions(
             max_kw,
             energy_kwh,
             dur_min,
-            _pct(soc_start_raw),
-            _pct(r["soc_end"]),
+            _pct(soc_start_val),
+            _pct(soc_end_val),
             r["auth_tag"] or "",          # L — Authentication (all auth methods)
             est_rev,                      # M — Est. Revenue
             r["vid_tag"] or "",           # N — VID (VID:-prefixed only)

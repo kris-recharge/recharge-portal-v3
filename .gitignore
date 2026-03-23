@@ -28,6 +28,9 @@ web/.vite/
 .idea/
 *.swp
 
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
+
 # ── Runtime overrides (local dev only — VPS has its own) ──────────────────────
 app/runtime_overrides.json
 

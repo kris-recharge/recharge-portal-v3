@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import { buildExportUrl } from '../lib/api'
-import { Download } from 'lucide-react'
+import { supabase } from '../lib/supabase'
+import { Download, Loader2 } from 'lucide-react'
 
 // Default date range: last 30 days
 function todayAK() {
@@ -18,10 +19,37 @@ export function ExportTab() {
   const [startDate, setStartDate] = useState(daysAgoAK(30))
   const [endDate,   setEndDate]   = useState(todayAK())
   const [format,    setFormat]    = useState<'csv' | 'xlsx'>('csv')
+  const [loading,   setLoading]   = useState(false)
+  const [error,     setError]     = useState<string | null>(null)
 
-  const handleDownload = () => {
-    const url = buildExportUrl({ start_date: startDate, end_date: endDate, format })
-    window.location.href = url
+  const handleDownload = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const url = buildExportUrl({ start_date: startDate, end_date: endDate, format })
+      const { data: { session } } = await supabase.auth.getSession()
+      const headers: Record<string, string> = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
+      const res = await fetch(url, { headers })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        throw new Error(`Export failed (${res.status})${text ? ': ' + text : ''}`)
+      }
+      const blob = await res.blob()
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = `sessions_${startDate}_to_${endDate}.${format}`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(link.href)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Download failed')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -72,11 +100,15 @@ export function ExportTab() {
 
         <button
           onClick={handleDownload}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors"
+          disabled={loading}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors"
         >
-          <Download size={16} />
-          Download {format.toUpperCase()}
+          {loading
+            ? <><Loader2 size={16} className="animate-spin" /> Preparing…</>
+            : <><Download size={16} /> Download {format.toUpperCase()}</>
+          }
         </button>
+        {error && <p className="text-xs text-red-500">{error}</p>}
 
         <p className="text-xs text-gray-400">
           Sessions sheet: Start/End DateTime (AK), EVSE, Location, Connector, Type,

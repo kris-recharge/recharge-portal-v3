@@ -35,6 +35,25 @@ def _pct(val) -> str:
     return f"{float(val):.0f}%"
 
 
+_CC_TAGS = {"FE6DD7B2C3904F", "161D77C442099C"}
+
+
+def _auth_method(auth_tag: str) -> str:
+    """Derive Authentication Method from the raw auth tag.
+
+    VID:*  → AutoCharge (vehicle-initiated via Autocharge protocol)
+    known CC tag IDs → CC
+    anything else    → App
+    """
+    if not auth_tag:
+        return "App"
+    if auth_tag.startswith("VID:"):
+        return "AutoCharge"
+    if auth_tag in _CC_TAGS:
+        return "CC"
+    return "App"
+
+
 @router.get("")
 async def export_sessions(
     user: CurrentUser,
@@ -178,8 +197,9 @@ async def export_sessions(
         "SoC Start (%)",          # J
         "SoC End (%)",            # K
         "Authentication",         # L
-        "Est. Revenue (USD)",     # M
-        "VID",                    # N
+        "Authentication Method",  # M
+        "Est. Revenue (USD)",     # N
+        "VID",                    # O
     ]
 
     data_rows: list[list] = []
@@ -234,9 +254,10 @@ async def export_sessions(
             dur_min,
             _pct(soc_start_val),
             _pct(soc_end_val),
-            r["auth_tag"] or "",          # L — Authentication (all auth methods)
-            est_rev,                      # M — Est. Revenue
-            r["vid_tag"] or "",           # N — VID (VID:-prefixed only)
+            r["auth_tag"] or "",                        # L — Authentication (raw tag)
+            _auth_method(r["auth_tag"] or ""),          # M — Authentication Method
+            est_rev,                                    # N — Est. Revenue
+            r["vid_tag"] or "",                         # O — VID (VID:-prefixed only)
         ])
 
     # ── Build faults rows ─────────────────────────────────────────────────────

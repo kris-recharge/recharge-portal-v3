@@ -24,6 +24,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        VITE_SUPABASE_URL: ${SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+        VITE_API_BASE: ""         # empty = relative URLs; Caddy serves both frontend + API
+    env_file: .env                # makes .env vars available for the args substitution above
     container_name: rca_web_v3
     restart: "no"               # build artifact only — run once to extract dist
     networks:

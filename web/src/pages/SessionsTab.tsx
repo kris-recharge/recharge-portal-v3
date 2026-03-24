@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
-import { fetchSessions, fetchAnalytics, ChargingSession } from '../lib/api'
+import { fetchSessions, fetchAnalytics, ChargingSession, EVSE_OPTIONS } from '../lib/api'
 import { KPICard } from '../components/KPICard'
 import { SkeletonKPIRow, SkeletonTable } from '../components/Skeleton'
 import { SessionDetailModal } from '../components/SessionDetailModal'
@@ -18,15 +18,6 @@ import { Zap, Clock, DollarSign, Activity, Filter, X, Radio } from 'lucide-react
 const PAGE_SIZE = 100
 const LIVE_HOURS = 168          // rolling window length
 const LIVE_REFRESH_MS = 60_000  // auto-refresh interval (60 s)
-
-// ── EVSE options (matches constants.py) ───────────────────────────────────────
-const EVSE_OPTIONS = [
-  { id: 'as_c8rCuPHDd7sV1ynHBVBiq', name: 'ARG - Right',   location: 'ARG' },
-  { id: 'as_cnIGqQ0DoWdFCo7zSrN01', name: 'ARG - Left',    location: 'ARG' },
-  { id: 'as_oXoa7HXphUu5riXsSW253', name: 'Delta - Right', location: 'Delta Jct' },
-  { id: 'as_xTUHfTKoOvKSfYZhhdlhT', name: 'Delta - Left',  location: 'Delta Jct' },
-  { id: 'as_LYHe6mZTRKiFfziSNJFvJ', name: 'Glennallen',    location: 'Glennallen' },
-]
 
 // ── AK-timezone date helpers ───────────────────────────────────────────────────
 const AK_TZ = 'America/Anchorage'
@@ -68,7 +59,11 @@ const DEFAULT_FILTERS: Filters = {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export function SessionsTab() {
+interface SessionsTabProps {
+  onFiltersApplied?: (f: { startDate: string; endDate: string; stationIds: string[] }) => void
+}
+
+export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
 
@@ -82,6 +77,7 @@ export function SessionsTab() {
   function applyFilters() {
     setPage(1)
     setApplied({ ...draft })
+    onFiltersApplied?.({ startDate: draft.startDate, endDate: draft.endDate, stationIds: draft.stationIds })
   }
 
   function clearFilters() {
@@ -93,6 +89,7 @@ export function SessionsTab() {
     setDraft(reset)
     setApplied(reset)
     setPage(1)
+    onFiltersApplied?.({ startDate: reset.startDate, endDate: reset.endDate, stationIds: reset.stationIds })
   }
 
   // ── Live toggle ────────────────────────────────────────────────────────────

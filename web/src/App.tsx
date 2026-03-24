@@ -32,10 +32,17 @@ const BASE_TABS: { id: Tab; label: string }[] = [
 
 const ADMIN_TAB: { id: Tab; label: string } = { id: 'admin', label: 'Admin' }
 
+interface SharedFilters {
+  startDate:  string
+  endDate:    string
+  stationIds: string[]
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('sessions')
-  const [userEmail, setUserEmail] = useState<string | null>(null)
-  const [loading,   setLoading]   = useState(true)
+  const [activeTab,      setActiveTab]      = useState<Tab>('sessions')
+  const [userEmail,      setUserEmail]      = useState<string | null>(null)
+  const [loading,        setLoading]        = useState(true)
+  const [sessionFilters, setSessionFilters] = useState<SharedFilters | null>(null)
 
   useEffect(() => {
     if (DEV_BYPASS_AUTH) {
@@ -118,10 +125,10 @@ export default function App() {
 
       {/* Main content */}
       <main className="max-w-screen-2xl mx-auto px-6 py-6">
-        {activeTab === 'sessions'     && <SessionsTab />}
+        {activeTab === 'sessions'     && <SessionsTab onFiltersApplied={setSessionFilters} />}
         {activeTab === 'status'       && <StatusTab />}
         {activeTab === 'connectivity' && <ConnectivityTab />}
-        {activeTab === 'export'       && <ExportTab />}
+        {activeTab === 'export'       && <ExportTab initialFilters={sessionFilters ?? undefined} />}
         {activeTab === 'alerts'       && <AlertsTab />}
         {activeTab === 'admin'        && isAdmin && <AdminTab />}
       </main>

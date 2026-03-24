@@ -203,6 +203,16 @@ export function fetchAnalytics(params?: {
   return apiFetch<AnalyticsResponse>(`/api/analytics?${qs}`)
 }
 
+// ── EVSE options (matches constants.py — shared between SessionsTab & ExportTab) ─
+
+export const EVSE_OPTIONS = [
+  { id: 'as_c8rCuPHDd7sV1ynHBVBiq', name: 'ARG - Right',   location: 'ARG' },
+  { id: 'as_cnIGqQ0DoWdFCo7zSrN01', name: 'ARG - Left',    location: 'ARG' },
+  { id: 'as_oXoa7HXphUu5riXsSW253', name: 'Delta - Right', location: 'Delta Jct' },
+  { id: 'as_xTUHfTKoOvKSfYZhhdlhT', name: 'Delta - Left',  location: 'Delta Jct' },
+  { id: 'as_LYHe6mZTRKiFfziSNJFvJ', name: 'Glennallen',    location: 'Glennallen' },
+]
+
 // ── Export ────────────────────────────────────────────────────────────────────
 
 export function buildExportUrl(params: {

@@ -94,8 +94,8 @@ class SmartHubCollector(AbstractCollector):
         )
 
         try:
-            token, username = await self._login()
-            rows  = await self._fetch_usage(token, username, days_back)
+            token, username, cookies = await self._login()
+            rows  = await self._fetch_usage(token, username, cookies, days_back)
             n     = await self.upsert_usage(pool, rows)
             await self.mark_collected(pool, error=None)
             self.log.info("SmartHub collect done: %d rows upserted", n)
@@ -109,11 +109,13 @@ class SmartHubCollector(AbstractCollector):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    async def _login(self) -> tuple[str, str]:
+    async def _login(self) -> tuple[str, str, dict]:
         """POST to /services/oauth/auth/v2, then fetch accounts list.
 
-        Returns (authorizationToken, username) so the poll can add the
-        Username header that the browser interceptor always injects.
+        Returns (authorizationToken, username, cookies) so the poll can add the
+        Username header that the browser interceptor always injects, and so that
+        session cookies (JSESSIONID, XSRF-TOKEN) are preserved across the client
+        boundary.
         """
         url = f"{self._base}/services/oauth/auth/v2"
         username = self.credentials["username"]
@@ -166,10 +168,11 @@ class SmartHubCollector(AbstractCollector):
             # Also log response headers for cookie/session debugging
             self.log.info("SmartHub login resp cookies: %s", dict(resp.cookies))
             self.log.info("SmartHub /accounts resp cookies: %s", dict(acct_resp.cookies))
+            login_cookies = dict(resp.cookies)
 
-        return token, username
+        return token, username, login_cookies
 
-    async def _fetch_usage(self, token: str, username: str, days_back: int) -> list[dict]:
+    async def _fetch_usage(self, token: str, username: str, cookies: dict, days_back: int) -> list[dict]:
         """Call the poll endpoint and return normalised usage rows."""
         acct       = self.account
         time_frame = PREFERRED_TIMEFRAME.get(self.utility, "DAILY")
@@ -211,8 +214,17 @@ class SmartHubCollector(AbstractCollector):
         if cust_nbr:
             headers["X-NISC-SMARTHUB-CUSTOMERNUMBER"] = cust_nbr
 
+        # Carry XSRF-TOKEN from login cookies into the request header so that
+        # Spring Security's CSRF filter accepts the POST.
+        xsrf = cookies.get("XSRF-TOKEN", "")
+        if xsrf:
+            headers["X-XSRF-TOKEN"] = xsrf
+
         self.log.info("SmartHub poll body: %s", body)
-        async with httpx.AsyncClient(timeout=60) as client:
+        self.log.info(
+            "SmartHub poll headers (redacted auth): %s", list(headers.keys())
+        )
+        async with httpx.AsyncClient(timeout=60, cookies=cookies) as client:
             resp = await client.post(url, json=body, headers=headers)
 
         if resp.status_code != 200:

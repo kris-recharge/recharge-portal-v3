@@ -16,9 +16,6 @@ import { AdminTab }        from './pages/AdminTab'
 import { AlertBanner }     from './components/AlertBanner'
 import { LogOut, Zap, Mail } from 'lucide-react'
 
-// DEV: bypass auth so the dashboard is visible during local review
-const DEV_BYPASS_AUTH = import.meta.env.DEV
-
 const ADMIN_EMAIL = 'kris.hall@rechargealaska.net'
 
 type Tab = 'sessions' | 'status' | 'connectivity' | 'export' | 'alerts' | 'maintenance' | 'admin'
@@ -47,12 +44,6 @@ export default function App() {
   const [sessionFilters, setSessionFilters] = useState<SharedFilters | null>(null)
 
   useEffect(() => {
-    if (DEV_BYPASS_AUTH) {
-      setUserEmail(ADMIN_EMAIL)   // dev mode: show all tabs including Admin
-      setLoading(false)
-      return
-    }
-
     supabase.auth.getSession().then(({ data }) => {
       setUserEmail(data.session?.user?.email ?? null)
       setLoading(false)

@@ -1,6 +1,6 @@
 /**
  * Main app shell — tab navigation + auth guard.
- * Tabs: Charging Sessions | Status History | Connectivity | Data Export | Alerts | Admin*
+ * Tabs: Charging Sessions | Status History | Connectivity | Data Export | Alerts | Maintenance | Admin*
  * * Admin tab only visible to kris.hall@rechargealaska.net
  */
 
@@ -11,6 +11,7 @@ import { StatusTab }       from './pages/StatusTab'
 import { ConnectivityTab } from './pages/ConnectivityTab'
 import { ExportTab }       from './pages/ExportTab'
 import { AlertsTab }       from './pages/AlertsTab'
+import { MaintenanceTab }  from './pages/MaintenanceTab'
 import { AdminTab }        from './pages/AdminTab'
 import { AlertBanner }     from './components/AlertBanner'
 import { LogOut, Zap, Mail } from 'lucide-react'
@@ -20,7 +21,7 @@ const DEV_BYPASS_AUTH = import.meta.env.DEV
 
 const ADMIN_EMAIL = 'kris.hall@rechargealaska.net'
 
-type Tab = 'sessions' | 'status' | 'connectivity' | 'export' | 'alerts' | 'admin'
+type Tab = 'sessions' | 'status' | 'connectivity' | 'export' | 'alerts' | 'maintenance' | 'admin'
 
 const BASE_TABS: { id: Tab; label: string }[] = [
   { id: 'sessions',     label: 'Charging Sessions' },
@@ -28,6 +29,7 @@ const BASE_TABS: { id: Tab; label: string }[] = [
   { id: 'connectivity', label: 'Connectivity' },
   { id: 'export',       label: 'Data Export' },
   { id: 'alerts',       label: 'Alerts' },
+  { id: 'maintenance',  label: 'Maintenance' },
 ]
 
 const ADMIN_TAB: { id: Tab; label: string } = { id: 'admin', label: 'Admin' }
@@ -130,6 +132,7 @@ export default function App() {
         {activeTab === 'connectivity' && <ConnectivityTab />}
         {activeTab === 'export'       && <ExportTab initialFilters={sessionFilters ?? undefined} />}
         {activeTab === 'alerts'       && <AlertsTab />}
+        {activeTab === 'maintenance'  && <MaintenanceTab userEmail={userEmail} />}
         {activeTab === 'admin'        && isAdmin && <AdminTab />}
       </main>
 

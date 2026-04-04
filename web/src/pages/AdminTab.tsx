@@ -12,9 +12,13 @@ import {
   fetchAdminEvse,     fetchAdminUnidentifiedEvse, upsertAdminEvse,
   fetchUtilityAccounts, createUtilityAccount, updateUtilityAccount, deleteUtilityAccount,
   fetchUtilityCredentials, upsertUtilityCredentials, triggerUtilityCollect,
+  fetchFleetUnitTypes, createFleetUnitType, updateFleetUnitType,
+  fetchMaintenanceOverview, onboardFleetUnit, moveFleetUnit, retireFleetUnit,
+  fetchSites,
   UTILITY_LABELS,
   type AdminUser, type AdminPricing, type AdminEvse, type AdminUnidentifiedEvse,
   type UtilityAccount, type UtilityCredential, type UtilityName,
+  type FleetUnitType, type MaintenanceUnit, type Site,
 } from '../lib/api'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -869,6 +873,494 @@ function AccountRow({
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// Fleet Management Section
+// ════════════════════════════════════════════════════════════════════════════════
+
+// ── Unit Types sub-section ────────────────────────────────────────────────────
+
+function UnitTypeRow({
+  ut,
+  onSave,
+}: {
+  ut: FleetUnitType
+  onSave: (id: string, patch: Partial<FleetUnitType>) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [form, setForm] = useState({
+    type_name: ut.type_name,
+    manufacturer: ut.manufacturer,
+    interval_annual_months: ut.interval_annual_months,
+    hyperdoc_required: ut.hyperdoc_required,
+    notes: ut.notes ?? '',
+    is_active: ut.is_active,
+  })
+
+  function handleSave() {
+    onSave(ut.id, {
+      type_name: form.type_name,
+      manufacturer: form.manufacturer,
+      interval_annual_months: Number(form.interval_annual_months),
+      hyperdoc_required: form.hyperdoc_required,
+      notes: form.notes || null,
+      is_active: form.is_active,
+    })
+    setEditing(false)
+  }
+
+  if (!editing) {
+    return (
+      <tr className="border-b border-gray-100 hover:bg-gray-50">
+        <td className="py-2 pr-4 font-medium text-gray-800">{ut.type_name}</td>
+        <td className="py-2 pr-4 text-gray-600">{ut.manufacturer}</td>
+        <td className="py-2 pr-4 text-gray-600">{ut.interval_annual_months}mo</td>
+        <td className="py-2 pr-4 text-gray-600">{ut.unit_count}</td>
+        <td className="py-2 pr-4">
+          <span className={`text-xs px-1.5 py-0.5 rounded-full ${ut.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+            {ut.is_active ? 'Active' : 'Inactive'}
+          </span>
+        </td>
+        <td className="py-2">
+          <button onClick={() => setEditing(true)} className="text-xs text-blue-600 hover:text-blue-800">Edit</button>
+        </td>
+      </tr>
+    )
+  }
+
+  return (
+    <tr className="border-b border-gray-100 bg-blue-50">
+      <td className="py-2 pr-2">
+        <input value={form.type_name} onChange={e => setForm(f => ({ ...f, type_name: e.target.value }))}
+          className="w-full text-xs border border-gray-300 rounded px-2 py-1" />
+      </td>
+      <td className="py-2 pr-2">
+        <input value={form.manufacturer} onChange={e => setForm(f => ({ ...f, manufacturer: e.target.value }))}
+          className="w-full text-xs border border-gray-300 rounded px-2 py-1" />
+      </td>
+      <td className="py-2 pr-2">
+        <input type="number" value={form.interval_annual_months}
+          onChange={e => setForm(f => ({ ...f, interval_annual_months: Number(e.target.value) }))}
+          className="w-16 text-xs border border-gray-300 rounded px-2 py-1" />
+      </td>
+      <td className="py-2 pr-2 text-gray-400 text-xs">{ut.unit_count}</td>
+      <td className="py-2 pr-2">
+        <label className="flex items-center gap-1 text-xs">
+          <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} />
+          Active
+        </label>
+      </td>
+      <td className="py-2">
+        <div className="flex gap-2">
+          <button onClick={handleSave} className="text-xs text-green-600 hover:text-green-800 font-medium">Save</button>
+          <button onClick={() => setEditing(false)} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function AddUnitTypeForm({ onCreated }: { onCreated: () => void }) {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({
+    type_name: '', manufacturer: '', interval_annual_months: 12,
+    hyperdoc_required: false, notes: '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setSaving(true); setErr(null)
+    try {
+      await createFleetUnitType({
+        type_name: form.type_name,
+        manufacturer: form.manufacturer,
+        interval_annual_months: Number(form.interval_annual_months),
+        hyperdoc_required: form.hyperdoc_required,
+        notes: form.notes || null,
+      })
+      qc.invalidateQueries({ queryKey: ['admin-fleet-unit-types'] })
+      setOpen(false)
+      setForm({ type_name: '', manufacturer: '', interval_annual_months: 12, hyperdoc_required: false, notes: '' })
+      onCreated()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+        + Add unit type
+      </button>
+    )
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
+      <div className="text-xs font-semibold text-gray-700 mb-2">New unit type</div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Model / Type name *</label>
+          <input required value={form.type_name} onChange={e => setForm(f => ({ ...f, type_name: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Manufacturer *</label>
+          <input required value={form.manufacturer} onChange={e => setForm(f => ({ ...f, manufacturer: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Annual PM interval (months)</label>
+          <input type="number" min={1} value={form.interval_annual_months}
+            onChange={e => setForm(f => ({ ...f, interval_annual_months: Number(e.target.value) }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div className="flex items-end pb-1.5">
+          <label className="flex items-center gap-1.5 text-xs text-gray-600">
+            <input type="checkbox" checked={form.hyperdoc_required}
+              onChange={e => setForm(f => ({ ...f, hyperdoc_required: e.target.checked }))} />
+            Hyperdoc required
+          </label>
+        </div>
+      </div>
+      {err && <p className="text-xs text-red-500">{err}</p>}
+      <div className="flex gap-2 pt-1">
+        <button type="submit" disabled={saving}
+          className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded font-medium hover:bg-blue-700 disabled:opacity-50">
+          {saving ? 'Saving…' : 'Create'}
+        </button>
+        <button type="button" onClick={() => setOpen(false)} className="text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+      </div>
+    </form>
+  )
+}
+
+function UnitTypesSection() {
+  const qc = useQueryClient()
+  const { data = [], isLoading } = useQuery({ queryKey: ['admin-fleet-unit-types'], queryFn: fetchFleetUnitTypes })
+  const mut = useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<FleetUnitType> }) => updateFleetUnitType(id, patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-fleet-unit-types'] }),
+  })
+
+  if (isLoading) return <p className="text-xs text-gray-400">Loading…</p>
+
+  return (
+    <div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-gray-400 text-left border-b border-gray-200">
+            <th className="pb-1 pr-4 font-medium">Model / Type</th>
+            <th className="pb-1 pr-4 font-medium">Manufacturer</th>
+            <th className="pb-1 pr-4 font-medium">PM Interval</th>
+            <th className="pb-1 pr-4 font-medium">Units</th>
+            <th className="pb-1 pr-4 font-medium">Status</th>
+            <th className="pb-1 font-medium"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map(ut => (
+            <UnitTypeRow key={ut.id} ut={ut}
+              onSave={(id, patch) => mut.mutate({ id, patch })} />
+          ))}
+        </tbody>
+      </table>
+      <div className="mt-3">
+        <AddUnitTypeForm onCreated={() => {}} />
+      </div>
+    </div>
+  )
+}
+
+// ── Onboard Unit sub-section ──────────────────────────────────────────────────
+
+function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
+  const qc = useQueryClient()
+  const { data: unitTypes = [] } = useQuery({ queryKey: ['admin-fleet-unit-types'], queryFn: fetchFleetUnitTypes })
+  const { data: sites = [] } = useQuery({ queryKey: ['maintenance-sites'], queryFn: fetchSites })
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({
+    serial_number: '',
+    name: '',
+    unit_type_id: '',
+    site_id: '',
+    commission_date: '',
+    warranty_start: '',
+    warranty_end: '',
+    owner_name: '',
+    maintenance_responsibility: 'RCA',
+    network_platform: '',
+    port_count: '1',
+  })
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setSaving(true); setErr(null)
+    try {
+      await onboardFleetUnit({
+        serial_number: form.serial_number,
+        name: form.name,
+        unit_type_id: form.unit_type_id,
+        site_id: form.site_id,
+        commission_date: form.commission_date || null,
+        warranty_start: form.warranty_start || null,
+        warranty_end: form.warranty_end || null,
+        owner_name: form.owner_name || null,
+        maintenance_responsibility: form.maintenance_responsibility,
+        network_platform: form.network_platform || null,
+        port_count: form.port_count ? Number(form.port_count) : null,
+      })
+      qc.invalidateQueries({ queryKey: ['maintenance-overview'] })
+      setOpen(false)
+      setForm({ serial_number: '', name: '', unit_type_id: '', site_id: '', commission_date: '',
+        warranty_start: '', warranty_end: '', owner_name: '', maintenance_responsibility: 'RCA',
+        network_platform: '', port_count: '1' })
+      onCreated()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+        + Onboard new unit
+      </button>
+    )
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
+      <div className="text-xs font-semibold text-gray-700 mb-2">Onboard new EVSE unit</div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Serial number *</label>
+          <input required value={form.serial_number} onChange={e => setForm(f => ({ ...f, serial_number: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 font-mono" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Display name *</label>
+          <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Unit type *</label>
+          <select required value={form.unit_type_id} onChange={e => setForm(f => ({ ...f, unit_type_id: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5">
+            <option value="">— Select —</option>
+            {unitTypes.filter(ut => ut.is_active).map(ut => (
+              <option key={ut.id} value={ut.id}>{ut.manufacturer} {ut.type_name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Site *</label>
+          <select required value={form.site_id} onChange={e => setForm(f => ({ ...f, site_id: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5">
+            <option value="">— Select —</option>
+            {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Commission date</label>
+          <input type="date" value={form.commission_date} onChange={e => setForm(f => ({ ...f, commission_date: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Network platform</label>
+          <input value={form.network_platform} onChange={e => setForm(f => ({ ...f, network_platform: e.target.value }))}
+            placeholder="e.g. RTM, Autel" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Warranty start</label>
+          <input type="date" value={form.warranty_start} onChange={e => setForm(f => ({ ...f, warranty_start: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Warranty end</label>
+          <input type="date" value={form.warranty_end} onChange={e => setForm(f => ({ ...f, warranty_end: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Owner</label>
+          <input value={form.owner_name} onChange={e => setForm(f => ({ ...f, owner_name: e.target.value }))}
+            placeholder="e.g. LynkWell" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Maintenance responsibility</label>
+          <select value={form.maintenance_responsibility}
+            onChange={e => setForm(f => ({ ...f, maintenance_responsibility: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5">
+            <option value="RCA">RCA</option>
+            <option value="LynkWell">LynkWell</option>
+            <option value="Owner">Owner</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Port count</label>
+          <input type="number" min={1} value={form.port_count}
+            onChange={e => setForm(f => ({ ...f, port_count: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+      </div>
+      {err && <p className="text-xs text-red-500">{err}</p>}
+      <div className="flex gap-2 pt-1">
+        <button type="submit" disabled={saving}
+          className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded font-medium hover:bg-blue-700 disabled:opacity-50">
+          {saving ? 'Saving…' : 'Onboard unit'}
+        </button>
+        <button type="button" onClick={() => setOpen(false)} className="text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+      </div>
+    </form>
+  )
+}
+
+// ── Active fleet units table ──────────────────────────────────────────────────
+
+function FleetUnitActions({
+  unit,
+  sites,
+  onDone,
+}: {
+  unit: MaintenanceUnit
+  sites: Site[]
+  onDone: () => void
+}) {
+  const [action, setAction] = useState<'move' | 'retire' | null>(null)
+  const [siteId, setSiteId] = useState('')
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function handleMove() {
+    if (!siteId) return
+    setSaving(true); setErr(null)
+    try {
+      await moveFleetUnit(unit.id, { site_id: siteId })
+      onDone()
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Error') }
+    finally { setSaving(false) }
+  }
+
+  async function handleRetire() {
+    if (!reason.trim()) return
+    setSaving(true); setErr(null)
+    try {
+      await retireFleetUnit(unit.id, reason)
+      onDone()
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Error') }
+    finally { setSaving(false) }
+  }
+
+  if (!action) {
+    return (
+      <div className="flex gap-2">
+        <button onClick={() => setAction('move')} className="text-xs text-blue-600 hover:text-blue-800">Move</button>
+        <button onClick={() => setAction('retire')} className="text-xs text-red-500 hover:text-red-700">Retire</button>
+      </div>
+    )
+  }
+
+  if (action === 'move') {
+    return (
+      <div className="flex items-center gap-1">
+        <select value={siteId} onChange={e => setSiteId(e.target.value)}
+          className="text-xs border border-gray-300 rounded px-1.5 py-1">
+          <option value="">— Site —</option>
+          {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <button onClick={handleMove} disabled={!siteId || saving}
+          className="text-xs text-green-600 hover:text-green-800 font-medium disabled:opacity-50">
+          {saving ? '…' : 'Move'}
+        </button>
+        <button onClick={() => setAction(null)} className="text-xs text-gray-400">✕</button>
+        {err && <span className="text-xs text-red-500">{err}</span>}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <input value={reason} onChange={e => setReason(e.target.value)}
+        placeholder="Retire reason" className="text-xs border border-gray-300 rounded px-1.5 py-1 w-32" />
+      <button onClick={handleRetire} disabled={!reason.trim() || saving}
+        className="text-xs text-red-600 hover:text-red-800 font-medium disabled:opacity-50">
+        {saving ? '…' : 'Retire'}
+      </button>
+      <button onClick={() => setAction(null)} className="text-xs text-gray-400">✕</button>
+      {err && <span className="text-xs text-red-500">{err}</span>}
+    </div>
+  )
+}
+
+function ActiveFleetSection() {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ['maintenance-overview'],
+    queryFn: () => fetchMaintenanceOverview(false),
+  })
+  const { data: sites = [] } = useQuery({ queryKey: ['maintenance-sites'], queryFn: fetchSites })
+
+  const units = data?.chargers ?? []
+
+  function handleDone() {
+    qc.invalidateQueries({ queryKey: ['maintenance-overview'] })
+  }
+
+  if (isLoading) return <p className="text-xs text-gray-400">Loading…</p>
+
+  return (
+    <div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-400 text-left border-b border-gray-200">
+              <th className="pb-1 pr-4 font-medium">Unit</th>
+              <th className="pb-1 pr-4 font-medium">S/N</th>
+              <th className="pb-1 pr-4 font-medium">Type</th>
+              <th className="pb-1 pr-4 font-medium">Site</th>
+              <th className="pb-1 pr-4 font-medium">Status</th>
+              <th className="pb-1 font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {units.map(u => (
+              <tr key={u.id} className="border-b border-gray-100 hover:bg-gray-50">
+                <td className="py-2 pr-4 font-medium text-gray-800">{u.name}</td>
+                <td className="py-2 pr-4 font-mono text-gray-500">{u.serial_number ?? '—'}</td>
+                <td className="py-2 pr-4 text-gray-600">{u.unit_type_name ?? '—'}</td>
+                <td className="py-2 pr-4 text-gray-600">{u.site_name ?? '—'}</td>
+                <td className="py-2 pr-4">
+                  <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                    u.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                  }`}>{u.status}</span>
+                </td>
+                <td className="py-2">
+                  <FleetUnitActions unit={u} sites={sites} onDone={handleDone} />
+                </td>
+              </tr>
+            ))}
+            {units.length === 0 && (
+              <tr><td colSpan={6} className="py-4 text-center text-gray-400 italic">No units found</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3">
+        <OnboardUnitForm onCreated={handleDone} />
+      </div>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // Main export
 // ════════════════════════════════════════════════════════════════════════════════
 
@@ -893,6 +1385,14 @@ export function AdminTab() {
 
       <Section title="Utility Data Collection" defaultOpen={false}>
         <UtilityAccountsSection />
+      </Section>
+
+      <Section title="Fleet Management — Unit Types" defaultOpen={false}>
+        <UnitTypesSection />
+      </Section>
+
+      <Section title="Fleet Management — Active Units" defaultOpen={false}>
+        <ActiveFleetSection />
       </Section>
     </div>
   )

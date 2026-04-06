@@ -164,7 +164,7 @@ export function SessionDetailModal({ session: s, onClose }: Props) {
             <Stat icon={<Battery size={14} />} label="SoC"        value={`${socStart.toFixed(0)} → ${socEnd.toFixed(0)} %`} />
           )}
           {s.est_revenue_usd != null && (
-            <Stat icon={<span className="text-xs font-bold">$</span>} label="Est. Revenue" value={`$${s.est_revenue_usd.toFixed(2)}`} />
+            <Stat icon={<span className="text-xs font-bold">$</span>} label="Est. Revenue" value={`$${(Math.floor(s.est_revenue_usd * 100) / 100).toFixed(2)}`} />
           )}
         </div>
 

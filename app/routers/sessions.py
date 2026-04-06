@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -217,7 +218,7 @@ async def get_sessions(
 
         p_kwh   = float(r["price_per_kwh"] or 0)
         c_fee   = float(r["connection_fee"] or 0)
-        est_rev = round(c_fee + (energy_kwh or 0) * p_kwh, 2) if (p_kwh or c_fee) else None
+        est_rev = math.floor((c_fee + (energy_kwh or 0) * p_kwh) * 100) / 100 if (p_kwh or c_fee) else None
 
         soc_start_pct, soc_end_pct = _resolve_soc(
             r["soc_start"], r["soc_first_nonzero"], r["soc_end"]
@@ -249,7 +250,7 @@ async def get_sessions(
         page=page,
         page_size=page_size,
         total_energy_kwh=round(total_energy, 3),
-        total_revenue_usd=round(total_revenue, 2),
+        total_revenue_usd=math.floor(total_revenue * 100) / 100,
         avg_duration_min=round(avg_duration, 1) if avg_duration is not None else None,
     )
 

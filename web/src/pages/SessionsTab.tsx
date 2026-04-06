@@ -579,7 +579,7 @@ function SessionRow({
         {s.id_tag?.startsWith('VID:') ? s.id_tag : ''}
       </td>
       <td className="tabular-nums text-emerald-700 font-medium">
-        {s.est_revenue_usd != null ? `$${s.est_revenue_usd.toFixed(2)}` : '—'}
+        {s.est_revenue_usd != null ? `$${(Math.floor(s.est_revenue_usd * 100) / 100).toFixed(2)}` : '—'}
       </td>
     </tr>
   )

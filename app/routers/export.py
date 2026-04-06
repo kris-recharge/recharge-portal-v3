@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import io
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -218,7 +219,7 @@ async def export_sessions(
         p_kwh      = float(r["price_per_kwh"] or 0)
         c_fee      = float(r["connection_fee"] or 0)
         est_rev    = (
-            round(c_fee + (float(energy_wh or 0) / 1000.0) * p_kwh, 2)
+            math.floor((c_fee + (float(energy_wh or 0) / 1000.0) * p_kwh) * 100) / 100
             if (p_kwh or c_fee) else ""
         )
 

@@ -84,10 +84,14 @@ def _supabase_get_user(access_token: str) -> dict | None:
 
 
 def _fetch_allowed_evse(email: str) -> list[str] | None:
-    """Look up portal_users.allowed_evse_ids for this email."""
+    """Look up portal_users.allowed_evse_ids for this email.
+
+    Uses ilike (case-insensitive) so mixed-case email in portal_users still
+    matches the lowercase email returned by Supabase auth (e.g. Mark vs mark).
+    """
     url = (
         f"{SUPABASE_URL.rstrip('/')}/rest/v1/portal_users"
-        f"?select=allowed_evse_ids&email=eq.{urllib.parse.quote(email)}&limit=1"
+        f"?select=allowed_evse_ids&email=ilike.{urllib.parse.quote(email.lower())}&limit=1"
     )
     req = urllib.request.Request(url, method="GET")
     req.add_header("apikey", SUPABASE_SERVICE_ROLE_KEY)

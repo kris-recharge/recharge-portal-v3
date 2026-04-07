@@ -13,7 +13,7 @@ import {
   AlertSubscription,
   AlertType,
 } from '../lib/api'
-import { Bell, BellOff, Clock, AlertTriangle, Wifi, Search } from 'lucide-react'
+import { Bell, BellOff, Clock, AlertTriangle, Wifi, Search, CalendarClock } from 'lucide-react'
 
 // ── Alert type metadata ───────────────────────────────────────────────────────
 
@@ -54,6 +54,20 @@ const ALERT_DEFS: AlertMeta[] = [
     icon: <Search size={18} />,
     color: 'text-yellow-700',
   },
+  {
+    type: 'pm_due_14d',
+    label: 'PM Due in 14 Days',
+    description: 'A scheduled preventive maintenance visit is coming up within 14 days. Sent once per PM cycle.',
+    icon: <CalendarClock size={18} />,
+    color: 'text-blue-700',
+  },
+  {
+    type: 'pm_overdue',
+    label: 'PM Overdue',
+    description: 'A PM is due today or past due. Sent on the due date, then weekly until the PM is logged.',
+    icon: <CalendarClock size={18} />,
+    color: 'text-red-700',
+  },
 ]
 
 const TYPE_LABELS: Record<string, string> = {
@@ -61,6 +75,8 @@ const TYPE_LABELS: Record<string, string> = {
   offline_mid_session: '⚠ Offline – Mid-Session',
   fault:               '🔴 Fault',
   suspicious_vid:      '🔍 Suspicious VID',
+  pm_due_14d:          '🔔 PM Due Soon',
+  pm_overdue:          '⚠ PM Overdue',
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -85,6 +101,8 @@ export function AlertsTab() {
     offline_mid_session: false,
     fault:               false,
     suspicious_vid:      false,
+    pm_due_14d:          false,
+    pm_overdue:          false,
   })
   const [dirty, setDirty] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -99,6 +117,8 @@ export function AlertsTab() {
       offline_mid_session: map['offline_mid_session'] ?? false,
       fault:               map['fault']               ?? false,
       suspicious_vid:      map['suspicious_vid']      ?? false,
+      pm_due_14d:          map['pm_due_14d']          ?? false,
+      pm_overdue:          map['pm_overdue']           ?? false,
     })
     setDirty(false)
   }, [subData])
@@ -280,6 +300,8 @@ function TypeBadge({ type }: { type: string }) {
     offline_mid_session: 'bg-red-50 text-red-700',
     fault:               'bg-red-100 text-red-800',
     suspicious_vid:      'bg-yellow-50 text-yellow-800',
+    pm_due_14d:          'bg-blue-50 text-blue-700',
+    pm_overdue:          'bg-red-50 text-red-700',
   }
   return (
     <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${

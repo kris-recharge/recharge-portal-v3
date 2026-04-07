@@ -7,6 +7,9 @@ Polls Supabase every 60 seconds and checks four alert conditions:
   2. Charger Offline – Mid-Session: no message during open transaction for >= 5 min
   3. Fault / Error Code:            StatusNotification with errorCode != 'NoError'
   4. Suspicious VID:                same ID tag, energy < 1 kWh, new session within 5 min
+  5. PM Due in 14 Days (pm_due_14d): next PM due date is 13–15 days out (fires once)
+  6. PM Overdue (pm_overdue):        PM is due today or overdue; fires on due date then
+                                     weekly until a new PM record is logged.
 
 Deduplication:
   - Offline alerts are silenced per asset until a new message arrives (BootNotification
@@ -14,6 +17,8 @@ Deduplication:
   - Fault alerts deduplicate by (asset_id, errorCode) within a 30-second window.
   - Suspicious VID: fires once per (id_tag, transaction_id) pair.
   - Mid-session offline: fires once per (asset_id, transaction_id) pair.
+  - PM due / overdue: deduplicates via fired_alerts table (20-day window for 14d notice;
+    7-day window for overdue weekly reminders).
 
 Email is sent via Microsoft 365 SMTP (smtp.office365.com:587).
 Browser banner is pushed via SSE (broadcast_alert → /api/alerts/stream).
@@ -25,7 +30,7 @@ import logging
 import smtplib
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
@@ -44,6 +49,11 @@ from .db import get_conn_sync
 # How many poll cycles between fired_alerts cleanup runs (60s × 240 = ~4 hours)
 _CLEANUP_EVERY_N = 240
 _cleanup_counter = 0
+
+# How many poll cycles between PM due-date checks (60s × 60 = ~1 hour)
+# Initialized to _PM_CHECK_EVERY_N so the first check runs immediately on startup.
+_PM_CHECK_EVERY_N = 60
+_pm_check_counter = _PM_CHECK_EVERY_N
 
 logger = logging.getLogger("rca.alerts")
 
@@ -532,10 +542,229 @@ def _check_suspicious_vid(conn) -> None:
         )
 
 
+# ── PM due-date alerts ────────────────────────────────────────────────────────
+
+def _fire_pm_alert(
+    conn,
+    alert_type: str,
+    charger_id: str,
+    evse_name: str,
+    message: str,
+    subject: str,
+    body_html: str,
+    timestamp_ak: str,
+) -> None:
+    """PM variant of _fire_alert — skips EVSE access filter.
+
+    Fleet units like the Terra184 have no external_id, so the standard
+    allowed_evse_ids check would exclude them.  PM subscriptions are sent
+    to every active user who has opted in to the PM alert type.
+    """
+    recipients: list[str] = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT pu.email
+                FROM alert_subscriptions asub
+                JOIN portal_users pu ON pu.id = asub.user_id
+                WHERE asub.alert_type = %s
+                  AND asub.enabled    = true
+                  AND pu.active       = true
+                """,
+                (alert_type,),
+            )
+            recipients = [row[0] for row in cur.fetchall()]
+    except Exception as exc:
+        logger.error("Failed to query PM alert subscriptions: %s", exc)
+
+    for email in recipients:
+        _send_email_to(email, subject, body_html)
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO fired_alerts (alert_type, asset_id, evse_name, message) "
+                "VALUES (%s, %s, %s, %s)",
+                (alert_type, charger_id, evse_name, message),
+            )
+        conn.commit()
+    except Exception as exc:
+        logger.error("Failed to log fired PM alert: %s", exc)
+
+    _broadcast(alert_type, evse_name, message, timestamp_ak)
+
+
+def _check_pm_due(conn) -> None:
+    """Check all active fleet units for upcoming or overdue PMs.
+
+    Cadence:
+      - pm_due_14d  : fires once when next_pm_due_date is 13–15 days out.
+                      Deduplicated via fired_alerts (20-day window per unit).
+      - pm_overdue  : fires when due today (days_until == 0) or overdue
+                      (days_until < 0).  Fires again weekly while still overdue.
+                      Deduplicated via fired_alerts (7-day window per unit).
+    """
+    today = date.today()
+    now_ak = _fmt_ak(datetime.now(tz=timezone.utc))
+
+    # Fetch all active chargers with unit_type PM intervals and last PM timestamps
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH last_pm AS (
+                SELECT
+                    charger_id,
+                    MAX(CASE WHEN record_type = 'pm_quarterly'
+                             THEN record_timestamp END)                    AS last_q,
+                    MAX(CASE WHEN record_type = 'pm_semi_annual'
+                             THEN record_timestamp END)                    AS last_sa,
+                    MAX(CASE WHEN record_type IN ('pm_annual', 'pm_general')
+                             THEN record_timestamp END)                    AS last_a
+                FROM maintenance_records
+                WHERE record_type IN
+                      ('pm_quarterly','pm_semi_annual','pm_annual','pm_general')
+                GROUP BY charger_id
+            )
+            SELECT
+                c.id::text                        AS charger_id,
+                c.name,
+                c.serial_number,
+                ut.interval_quarterly_months,
+                ut.interval_semiannual_months,
+                ut.interval_annual_months,
+                lp.last_q,
+                lp.last_sa,
+                lp.last_a
+            FROM chargers c
+            LEFT JOIN unit_types ut ON ut.id = c.unit_type_id
+            LEFT JOIN last_pm lp    ON lp.charger_id = c.id
+            WHERE c.status = 'active'
+              AND c.unit_type_id IS NOT NULL
+            """
+        )
+        rows = cur.fetchall()
+
+    def _next_due_date(last_ts, months) -> date | None:
+        if not months or not last_ts:
+            return None
+        last_d = last_ts.date() if hasattr(last_ts, "date") else last_ts
+        return date.fromordinal(last_d.toordinal() + months * 30)
+
+    for row in rows:
+        (charger_id, name, serial,
+         q_months, sa_months, a_months,
+         last_q, last_sa, last_a) = row
+        a_months = a_months or 12
+
+        candidates = [
+            (d, label)
+            for d, label in [
+                (_next_due_date(last_q,  q_months),  "Quarterly"),
+                (_next_due_date(last_sa, sa_months), "Semi-Annual"),
+                (_next_due_date(last_a,  a_months),  "Annual"),
+            ]
+            if d is not None
+        ]
+        if not candidates:
+            continue  # no PM history yet — no calculated due date
+
+        candidates.sort(key=lambda x: x[0])
+        next_due, pm_label = candidates[0]
+        days_until = (next_due - today).days
+        unit_label = f"{name}{f' ({serial})' if serial else ''}"
+
+        if 13 <= days_until <= 15:
+            # ── 14-day advance notice ─────────────────────────────────────
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM fired_alerts "
+                    "WHERE alert_type = 'pm_due_14d' AND asset_id = %s "
+                    "  AND fired_at >= NOW() - INTERVAL '20 days'",
+                    (charger_id,),
+                )
+                already = cur.fetchone()
+            if already:
+                continue
+
+            logger.info("Firing pm_due_14d for %s (due %s)", unit_label, next_due)
+            _fire_pm_alert(
+                conn,
+                alert_type   = "pm_due_14d",
+                charger_id   = charger_id,
+                evse_name    = unit_label,
+                message      = (f"{pm_label} PM due in {days_until} days "
+                                f"({next_due.isoformat()})"),
+                subject      = f"🔔 PM Due in 14 Days: {unit_label}",
+                body_html    = _alert_body(
+                    f"Preventive Maintenance Due in {days_until} Days",
+                    [
+                        ("Charger",       unit_label),
+                        ("PM Type",       pm_label),
+                        ("Due Date",      next_due.isoformat()),
+                        ("Days Until Due", str(days_until)),
+                        ("Serial Number", serial or "—"),
+                        ("Action",        "Schedule PM visit before due date"),
+                    ],
+                ),
+                timestamp_ak = now_ak,
+            )
+
+        elif days_until <= 0:
+            # ── Due today or overdue — weekly reminder ────────────────────
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM fired_alerts "
+                    "WHERE alert_type = 'pm_overdue' AND asset_id = %s "
+                    "  AND fired_at >= NOW() - INTERVAL '7 days'",
+                    (charger_id,),
+                )
+                already = cur.fetchone()
+            if already:
+                continue
+
+            days_overdue = abs(days_until)
+            if days_overdue == 0:
+                msg     = (f"{pm_label} PM due today ({next_due.isoformat()})")
+                subject = f"🔔 PM Due Today: {unit_label}"
+                title   = "Preventive Maintenance Due Today"
+                detail  = "Due today"
+            else:
+                msg     = (f"{pm_label} PM overdue by {days_overdue} day"
+                           f"{'s' if days_overdue != 1 else ''} "
+                           f"(was due {next_due.isoformat()})")
+                subject = f"⚠ PM Overdue ({days_overdue}d): {unit_label}"
+                title   = (f"Preventive Maintenance Overdue by {days_overdue} "
+                           f"Day{'s' if days_overdue != 1 else ''}")
+                detail  = f"{days_overdue} day{'s' if days_overdue != 1 else ''} overdue"
+
+            logger.info("Firing pm_overdue for %s (%s)", unit_label, detail)
+            _fire_pm_alert(
+                conn,
+                alert_type   = "pm_overdue",
+                charger_id   = charger_id,
+                evse_name    = unit_label,
+                message      = msg,
+                subject      = subject,
+                body_html    = _alert_body(
+                    title,
+                    [
+                        ("Charger",       unit_label),
+                        ("PM Type",       pm_label),
+                        ("Due Date",      next_due.isoformat()),
+                        ("Status",        detail),
+                        ("Serial Number", serial or "—"),
+                        ("Action",        "Complete PM and log record in the Maintenance Tracker"),
+                    ],
+                ),
+                timestamp_ak = now_ak,
+            )
+
+
 # ── Main poll loop ────────────────────────────────────────────────────────────
 
 def _run_poll_loop() -> None:
-    global _cleanup_counter
+    global _cleanup_counter, _pm_check_counter
     logger.info("Alert poll loop started (interval=%ds)", POLL_INTERVAL_SEC)
     while True:
         try:
@@ -545,6 +774,13 @@ def _run_poll_loop() -> None:
                 _check_offline_mid_session(conn)
                 _check_faults(conn)
                 _check_suspicious_vid(conn)
+
+                # PM due-date check — runs every ~1 hour
+                _pm_check_counter += 1
+                if _pm_check_counter >= _PM_CHECK_EVERY_N:
+                    _check_pm_due(conn)
+                    _pm_check_counter = 0
+
                 _cleanup_counter += 1
                 if _cleanup_counter >= _CLEANUP_EVERY_N:
                     _cleanup_fired_alerts(conn)

@@ -232,7 +232,7 @@ export function buildExportUrl(params: {
 
 // ── Alerts Config & History ────────────────────────────────────────────────
 
-export type AlertType = 'offline_idle' | 'offline_mid_session' | 'fault' | 'suspicious_vid'
+export type AlertType = 'offline_idle' | 'offline_mid_session' | 'fault' | 'suspicious_vid' | 'pm_due_14d' | 'pm_overdue'
 
 export interface AlertSubscription {
   alert_type: AlertType

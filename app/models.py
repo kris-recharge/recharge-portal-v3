@@ -141,7 +141,8 @@ class ExportRequest(BaseModel):
 
 # ── Alerts Config & History ───────────────────────────────────────────────────
 
-ALERT_TYPES = ("offline_idle", "offline_mid_session", "fault", "suspicious_vid")
+ALERT_TYPES = ("offline_idle", "offline_mid_session", "fault", "suspicious_vid",
+               "pm_due_14d", "pm_overdue")
 
 class AlertSubscription(BaseModel):
     alert_type: str   # one of ALERT_TYPES

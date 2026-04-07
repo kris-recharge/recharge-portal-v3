@@ -676,6 +676,298 @@ SELECT
 WHERE NOT EXISTS (
     SELECT 1 FROM chargers WHERE id = 'eeeeeeee-eeee-eeee-eeee-000000000001'::uuid
 );
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- v3.2  ABB Terra184 native PM templates
+--       Source: ABB Terra x4 User Manual, Sections 4.8.1 (Owner PM) & 7.3 (SE PM)
+--       Unit: T184-IT1-3423-020 — CC config (dual CCS, no CHAdeMO)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+INSERT INTO pm_templates
+    (id, template_name, unit_type_id, pm_interval, source_document, template_version)
+VALUES
+  ('bbbbbbbb-bbbb-bbbb-bbbb-000000000005',
+   'ABB Terra184 Quarterly v1.0',
+   'aaaaaaaa-aaaa-aaaa-aaaa-000000000004',
+   'quarterly',
+   'ABB Terra x4 User Manual — Sections 4.8.1 (Owner PM) & 7.3 (Service Engineer PM)',
+   'v1.0'),
+
+  ('bbbbbbbb-bbbb-bbbb-bbbb-000000000006',
+   'ABB Terra184 Semi-Annual v1.0',
+   'aaaaaaaa-aaaa-aaaa-aaaa-000000000004',
+   'semi_annual',
+   'ABB Terra x4 User Manual — Sections 4.8.1 (Owner PM) & 7.3 (Service Engineer PM)',
+   'v1.0'),
+
+  ('bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'ABB Terra184 Annual v1.0',
+   'aaaaaaaa-aaaa-aaaa-aaaa-000000000004',
+   'annual',
+   'ABB Terra x4 User Manual — Sections 4.8.1 (Owner PM) & 7.3 (Service Engineer PM)',
+   'v1.0')
+ON CONFLICT (id) DO NOTHING;
+
+-- Remove Autel mirror from Terra184 — native templates now exist
+UPDATE unit_types SET mirror_type_id = NULL
+WHERE id   = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000004'
+  AND mirror_type_id = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001';
+
+-- Set default annual template for Terra184 (idempotent)
+UPDATE unit_types SET default_pm_template_id = 'bbbbbbbb-bbbb-bbbb-bbbb-000000000007'
+WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000004'
+  AND default_pm_template_id IS NULL;
+
+-- ── ABB Terra184 Quarterly tasks (template ...0005) ───────────────────────────
+-- Section 4.8.1: cables/connectors every 3 months; cabinet clean every 4 months
+-- Section 7.3:   cables/connectors & gun holders inspect annually → check each visit
+INSERT INTO pm_template_tasks
+    (id, template_id, task_code, task_order, task_category,
+     task_name, task_description, input_type,
+     is_required, is_conditional, conditional_label, critical_fail, fail_guidance)
+VALUES
+  ('eeeeeeee-0005-0000-0000-000000000001',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000005',
+   'Q-01', 1, 'Physical Inspection',
+   'EV charge cables & connectors — all ports',
+   'Inspect all CCS charge cables and connectors (both outlets on CC config) for cuts, '
+   'cracks, abrasion, or connector damage. Inspect full cable length and strain relief. '
+   '(Section 4.8.1 — every 3 months; Section 7.3 — inspect annually)',
+   'pass_fail', true, false, NULL, false,
+   'Remove affected outlet from service. Note severity and which port(s) affected.'),
+
+  ('eeeeeeee-0005-0000-0000-000000000002',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000005',
+   'Q-02', 2, 'Physical Inspection',
+   'Cabinet cleaning',
+   'Clean exterior of cabinet. Remove dust, debris, and contaminants from surfaces and ventilation openings. '
+   '(Section 4.8.1 — every 4 months; performed at each quarterly visit)',
+   'completed', true, false, NULL, false, NULL),
+
+  ('eeeeeeee-0005-0000-0000-000000000003',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000005',
+   'Q-03', 3, 'Physical Inspection',
+   'Gun holders — all ports',
+   'Inspect gun holders on all CCS outlets for physical damage or improper seating. '
+   'Verify rain caps are present and undamaged. (Section 7.3 — inspect annually; checked each visit)',
+   'pass_fail', true, false, NULL, false,
+   'Replace damaged gun holder. Parts: XAB.V2N21.01 (CCS Type 1 UL) / XAB.V2N17.01 (CCS Type 2 CE). '
+   'Rain cap: XEE.V2N50.01 (Type 1) / XEE.V2N49.01 (Type 2).')
+ON CONFLICT (id) DO NOTHING;
+
+-- ── ABB Terra184 Semi-Annual tasks (template ...0006) ─────────────────────────
+-- Cumulative: all quarterly tasks + cabinet damage check + detailed connector inspection
+INSERT INTO pm_template_tasks
+    (id, template_id, task_code, task_order, task_category,
+     task_name, task_description, input_type,
+     is_required, is_conditional, conditional_label, critical_fail, fail_guidance)
+VALUES
+  ('eeeeeeee-0006-0000-0000-000000000001',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000006',
+   'Q-01', 1, 'Physical Inspection',
+   'EV charge cables & connectors — all ports',
+   'Inspect all CCS charge cables and connectors (both outlets on CC config) for cuts, '
+   'cracks, abrasion, or connector damage. Inspect full cable length and strain relief. '
+   '(Section 4.8.1 — every 3 months)',
+   'pass_fail', true, false, NULL, false,
+   'Remove affected outlet from service. Note severity and which port(s) affected.'),
+
+  ('eeeeeeee-0006-0000-0000-000000000002',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000006',
+   'Q-02', 2, 'Physical Inspection',
+   'Cabinet cleaning',
+   'Clean exterior of cabinet. Remove dust, debris, and contaminants. (Section 4.8.1 — every 4 months)',
+   'completed', true, false, NULL, false, NULL),
+
+  ('eeeeeeee-0006-0000-0000-000000000003',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000006',
+   'S-01', 3, 'Physical Inspection',
+   'Cabinet exterior — damage inspection',
+   'Inspect cabinet for physical damage: dents, corrosion, door seal integrity, latch operation, '
+   'ventilation openings unobstructed. (Section 4.8.1 — every 6 months)',
+   'pass_fail_action', true, false, NULL, false,
+   'Document damage with photos. Schedule repair if structural integrity or weatherproofing is compromised.'),
+
+  ('eeeeeeee-0006-0000-0000-000000000004',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000006',
+   'S-02', 4, 'Physical Inspection',
+   'CCS connector & cable — detailed inspection',
+   'Inspect CCS connector mating face and pins for corrosion, deformation, or contact damage. '
+   'Verify cable glands are tight. Confirm rain caps present and undamaged. '
+   '(Section 7.3 — inspect annually; Part: ZLH.01085 per outlet; Rain cap: XEE.V2N50.01 / XEE.V2N49.01)',
+   'pass_fail', true, false, NULL, false,
+   'Replace connector/cable assembly if mating face or pins are damaged. Part ZLH.01085 (qty 1 per outlet).'),
+
+  ('eeeeeeee-0006-0000-0000-000000000005',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000006',
+   'S-03', 5, 'Physical Inspection',
+   'CHAdeMO connector & cable',
+   'Inspect CHAdeMO connector and cable. Mark N/A if unit is CC config (CCS-only). '
+   '(Section 7.3 — inspect annually; Part: YVD.V3G25.0 per outlet)',
+   'pass_fail', true, true, 'N/A — CC config, no CHAdeMO installed', false,
+   'Replace assembly if damaged. Part: YVD.V3G25.0 (qty 1 per outlet).'),
+
+  ('eeeeeeee-0006-0000-0000-000000000006',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000006',
+   'S-04', 6, 'Physical Inspection',
+   'Gun holders — all ports',
+   'Inspect gun holders on all outlets for physical damage or improper seating. '
+   '(Section 7.3; Parts: XAB.V2N21.01 CCS Type 1 / XAB.V2N17.01 CCS Type 2 / XAB.V2N18.01 CHAdeMO)',
+   'pass_fail', true, false, NULL, false,
+   'Replace damaged gun holder using appropriate ABB part for connector type.')
+ON CONFLICT (id) DO NOTHING;
+
+-- ── ABB Terra184 Annual tasks (template ...0007) ──────────────────────────────
+-- Cumulative: all quarterly + semi-annual tasks + filter replacements + lifecycle items
+-- Lifecycle replacement schedule (Section 7.3):
+--   Fans, DC fuses, power supplies → Years 5 / 10 / 15
+--   Power modules                  → Year 10
+--   CPI, contactors, touchscreen   → Year 15
+INSERT INTO pm_template_tasks
+    (id, template_id, task_code, task_order, task_category,
+     task_name, task_description, input_type,
+     is_required, is_conditional, conditional_label, critical_fail, fail_guidance)
+VALUES
+  ('eeeeeeee-0007-0000-0000-000000000001',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'Q-01', 1, 'Physical Inspection',
+   'EV charge cables & connectors — all ports',
+   'Inspect all CCS charge cables and connectors for cuts, cracks, abrasion, or connector damage. '
+   'Inspect full cable length and strain relief. (Section 4.8.1 — every 3 months; Section 7.3 — inspect annually)',
+   'pass_fail', true, false, NULL, false,
+   'Remove affected outlet from service. Note which port(s) affected.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000002',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'Q-02', 2, 'Physical Inspection',
+   'Cabinet cleaning',
+   'Clean exterior of cabinet. Remove dust, debris, and contaminants from surfaces and ventilation openings. '
+   '(Section 4.8.1 — every 4 months)',
+   'completed', true, false, NULL, false, NULL),
+
+  ('eeeeeeee-0007-0000-0000-000000000003',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'S-01', 3, 'Physical Inspection',
+   'Cabinet exterior — damage inspection',
+   'Inspect cabinet for physical damage: dents, corrosion, door seal integrity, latch operation, '
+   'ventilation openings unobstructed. (Section 4.8.1 — every 6 months)',
+   'pass_fail_action', true, false, NULL, false,
+   'Document with photos. Schedule repair if structural integrity or weatherproofing is compromised.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000004',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'S-02', 4, 'Physical Inspection',
+   'CCS connector & cable — detailed inspection',
+   'Inspect CCS connector mating face and pins for corrosion, deformation, or contact damage. '
+   'Verify cable glands tight. Confirm rain caps present. (Section 7.3 — inspect all years; never replaced per schedule)',
+   'pass_fail', true, false, NULL, false,
+   'Replace assembly if mating face or pins are damaged. Part: ZLH.01085 (qty 1 per outlet).'),
+
+  ('eeeeeeee-0007-0000-0000-000000000005',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'S-03', 5, 'Physical Inspection',
+   'CHAdeMO connector & cable',
+   'Inspect CHAdeMO connector and cable. Mark N/A if CC config (CCS-only). (Section 7.3 — inspect all years)',
+   'pass_fail', true, true, 'N/A — CC config, no CHAdeMO installed', false,
+   'Replace assembly if damaged. Part: YVD.V3G25.0 (qty 1 per outlet).'),
+
+  ('eeeeeeee-0007-0000-0000-000000000006',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'S-04', 6, 'Physical Inspection',
+   'Gun holders — all ports',
+   'Inspect gun holders for damage or improper seating. (Section 7.3 — inspect all years; never replaced per schedule)',
+   'pass_fail', true, false, NULL, false,
+   'Replace if damaged. Parts: XAB.V2N21.01 (CCS Type 1) / XAB.V2N17.01 (CCS Type 2) / XAB.V2N18.01 (CHAdeMO).'),
+
+  ('eeeeeeee-0007-0000-0000-000000000007',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-01', 7, 'Replacement',
+   'Inlet air filter — replace',
+   'Replace inlet air filter(s). Record part in Parts Replaced section. '
+   'Part: XUF.N0001.0 (qty 1 per unit). (Section 4.8.1 + Section 7.3 — replace every year, years 1–15)',
+   'completed', true, false, NULL, false, NULL),
+
+  ('eeeeeeee-0007-0000-0000-000000000008',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-02', 8, 'Replacement',
+   'Outlet air filter — inspect (odd service years) / replace (year 1 and even service years)',
+   'Year 1: replace. Even service years (2, 4, 6 …): replace. Odd service years (3, 5, 7 …): inspect only. '
+   'Note current service year and action taken in task notes. '
+   'Part: XUF.N0002.0 (qty 1 per unit). (Section 7.3)',
+   'pass_fail_action', true, false, NULL, false,
+   'Replace if degraded regardless of scheduled year. Record whether inspected or replaced.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000009',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-03', 9, 'Lifecycle — Inspect/Replace',
+   'Cooling fan',
+   'Inspect cooling fan(s) for noise, vibration, or reduced airflow. '
+   'Replace at service years 5, 10, and 15; inspect at all other years. '
+   'Note service year, condition, and whether replaced. Part: ZFV.V2N00.01 (qty 1). (Section 7.3)',
+   'pass_fail_action', true, false, NULL, false,
+   'Replace immediately if fan is noisy, vibrating, or underperforming, regardless of scheduled year.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000010',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-04', 10, 'Lifecycle — Inspect/Replace',
+   'DC fuse 500A',
+   'Visually inspect DC fuse(s) for heat damage, discoloration, or housing cracks. '
+   'Replace at service years 5, 10, and 15; inspect at all other years. '
+   'Note service year and fuse condition. Part: ZEG.00132 (qty 2 for CC config). '
+   '(Section 7.3 — listed as "DC fuse 200A"; spare parts Section 7.4 lists 500A ZEG.00132 — verify correct fuse rating on unit)',
+   'pass_fail_action', true, false, NULL, false,
+   'Replace immediately if fuse shows signs of damage. Use ABB part ZEG.00132.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000011',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-05', 11, 'Lifecycle — Inspect/Replace',
+   'Power modules (x6 for Terra184)',
+   'Inspect all 6 power modules for fault indicator LEDs, unusual heat, or active alarm codes on display. '
+   'Replace full set at service year 10; inspect all other years. '
+   'Note service year and any fault codes. Part: YPA.00267 (qty 6 for Terra 184). (Section 7.3)',
+   'pass_fail_action', true, false, NULL, false,
+   'Log any active fault codes. Contact ABB service if module shows fault. Replace full set at year 10.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000012',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-06', 12, 'Lifecycle — Inspect/Replace',
+   'CPI Combo CCS interface',
+   'Inspect CPI Combo CCS interface for physical damage or communication faults. '
+   'Replace at service year 15; inspect all other years. '
+   'Part: YVD.V39A3.0 (qty 2 for CC config). (Section 7.3)',
+   'pass_fail', true, false, NULL, false,
+   'Log any faults. Replace at year 15 per lifecycle schedule.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000013',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-07', 13, 'Lifecycle — Inspect/Replace',
+   'DC outlet contactors',
+   'Inspect DC outlet contactor(s) for proper operation and signs of arcing or wear. '
+   'Replace at service year 15; inspect all other years. '
+   'Part: ZEQQ.00104 (qty 2 for CC config). (Section 7.3)',
+   'pass_fail', true, false, NULL, false,
+   'Report operational issues to ABB service. Replace at year 15.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000014',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-08', 14, 'Lifecycle — Inspect/Replace',
+   'Touchscreen / CPU',
+   'Inspect touchscreen and CPU for proper display, responsiveness, and error codes. '
+   'Replace at service year 15; inspect all other years. '
+   'Part: YVD.V2N11.01 (qty 1). (Section 7.3)',
+   'pass_fail', true, false, NULL, false,
+   'Document any display issues or error codes. Replace at year 15.'),
+
+  ('eeeeeeee-0007-0000-0000-000000000015',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000007',
+   'A-09', 15, 'Lifecycle — Inspect/Replace',
+   'Auxiliary power supply',
+   'Inspect auxiliary power supply for proper operation and output within spec. '
+   'Replace at service years 5, 10, and 15; inspect all other years. '
+   'Part: YPA.00205 (qty 1). (Section 7.3)',
+   'pass_fail_action', true, false, NULL, false,
+   'Replace at years 5, 10, 15 per lifecycle schedule. Report voltage faults immediately.')
+ON CONFLICT (id) DO NOTHING;
 """
 
 

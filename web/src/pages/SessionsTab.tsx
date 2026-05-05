@@ -13,7 +13,7 @@ import { SkeletonKPIRow, SkeletonTable } from '../components/Skeleton'
 import { SessionDetailModal } from '../components/SessionDetailModal'
 import { DailyTotalsCharts } from '../components/DailyTotalsCharts'
 import { SessionDensityHeatmap } from '../components/SessionDensityHeatmap'
-import { Zap, Clock, DollarSign, Activity, Filter, X, Radio } from 'lucide-react'
+import { Zap, Clock, DollarSign, Activity, Filter, X, Radio, Gauge } from 'lucide-react'
 
 const PAGE_SIZE = 100
 const LIVE_HOURS = 168          // rolling window length
@@ -199,6 +199,7 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
   const totalEnergy  = data?.total_energy_kwh  ?? 0
   const totalRevenue = data?.total_revenue_usd ?? 0
   const avgDuration  = data?.avg_duration_min  ?? null
+  const avgDispensed = total > 0 ? totalEnergy / total : null
 
   const allEvseSelected = draft.stationIds.length === 0
 
@@ -390,7 +391,7 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
       {isLoading ? (
         <SkeletonKPIRow />
       ) : (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <KPICard
             title="Total Sessions"
             value={total.toLocaleString()}
@@ -418,6 +419,13 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
             icon={<Clock size={16} />}
             color="gray"
             subtitle="across filtered results"
+          />
+          <KPICard
+            title="Avg Dispensed"
+            value={avgDispensed != null ? `${avgDispensed.toFixed(1)} kWh` : '—'}
+            icon={<Gauge size={16} />}
+            color="green"
+            subtitle="per session, filtered"
           />
         </div>
       )}

@@ -25,7 +25,7 @@ interface Props {
 }
 
 export function ExportTab({ initialFilters }: Props) {
-  const [startDate,  setStartDate]  = useState(initialFilters?.startDate  || daysAgoAK(30))
+  const [startDate,  setStartDate]  = useState(initialFilters?.startDate  || daysAgoAK(7))
   const [endDate,    setEndDate]    = useState(initialFilters?.endDate    || todayAK())
   const [stationIds, setStationIds] = useState<string[]>(initialFilters?.stationIds ?? [])
   const [format,     setFormat]     = useState<'csv' | 'xlsx'>('csv')

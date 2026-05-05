@@ -34,8 +34,8 @@ export function SkeletonCard() {
 
 export function SkeletonKPIRow() {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-      {Array.from({ length: 4 }).map((_, i) => (
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+      {Array.from({ length: 5 }).map((_, i) => (
         <SkeletonCard key={i} />
       ))}
     </div>

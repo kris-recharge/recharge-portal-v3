@@ -58,15 +58,24 @@ export function StatusTab() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full data-table">
+          <table className="w-full data-table table-fixed">
+            <colgroup>
+              <col className="w-44" />
+              <col className="w-28" />
+              <col className="w-16" />
+              <col className="w-24" />
+              <col className="w-28" />
+              <col className="w-20" />
+              <col />
+            </colgroup>
             <thead>
               <tr>
                 <th>Time (AK)</th>
                 <th>EVSE</th>
-                <th>Connector</th>
+                <th className="!px-2 text-center">Conn.</th>
                 <th>Status</th>
                 <th>Error Code</th>
-                <th>Vendor Code</th>
+                <th className="!px-2">Vendor</th>
                 <th>Description</th>
               </tr>
             </thead>
@@ -82,11 +91,14 @@ export function StatusTab() {
                   <tr key={e.id}>
                     <td className="font-mono text-xs">{e.received_at_ak}</td>
                     <td className="font-medium">{e.evse_name}</td>
-                    <td className="text-center">{e.connector_id ?? '—'}</td>
+                    <td className="text-center !px-2">{e.connector_id ?? '—'}</td>
                     <td><StatusBadge status={e.status} /></td>
                     <td className="font-mono text-xs text-red-600">{e.error_code || '—'}</td>
-                    <td className="font-mono text-xs text-gray-500">{e.vendor_error_code || '—'}</td>
-                    <td className="text-xs text-gray-700 max-w-xs truncate" title={e.vendor_error_description ?? ''}>
+                    <td className="font-mono text-xs text-gray-500 !px-2">{e.vendor_error_code || '—'}</td>
+                    <td
+                      className="text-xs text-gray-700 !whitespace-normal break-words leading-snug"
+                      title={e.vendor_error_description ?? ''}
+                    >
                       {e.vendor_error_description || ''}
                     </td>
                   </tr>

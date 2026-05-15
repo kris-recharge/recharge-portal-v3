@@ -123,7 +123,7 @@ ALTER TABLE chargers ADD COLUMN IF NOT EXISTS created_at                 TIMESTA
 
 -- ── unit_types ────────────────────────────────────────────────────────────────
 -- mirror_type_id: if no pm_templates exist for this unit type, use that type's
--- templates instead (e.g. Tritium mirrors Autel).
+-- templates instead (e.g. ABB Terra53 mirrors Autel).
 CREATE TABLE IF NOT EXISTS unit_types (
     id                        UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     type_name                 TEXT        NOT NULL UNIQUE,
@@ -245,6 +245,23 @@ CREATE TABLE IF NOT EXISTS maintenance_photos (
     uploaded_by     UUID
 );
 
+-- ── RLS: lock down all application tables ────────────────────────────────────
+-- Service role (used by this app via DATABASE_URL and service role key) bypasses
+-- RLS automatically. Anon/authenticated roles have no direct table access —
+-- all data access goes through the FastAPI backend only.
+ALTER TABLE alert_subscriptions       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fired_alerts              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE utility_accounts          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE utility_usage             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unit_types                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unit_location_history     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_templates              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_template_tasks         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE maintenance_records       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_task_results           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE maintenance_parts_replaced ENABLE ROW LEVEL SECURITY;
+ALTER TABLE maintenance_photos        ENABLE ROW LEVEL SECURITY;
+
 -- ── Timestamp immutability triggers ──────────────────────────────────────────
 CREATE OR REPLACE FUNCTION trg_fn_immutable_record_timestamp()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -283,10 +300,10 @@ VALUES
    'Autel DC Fast', 'Autel', NULL, 3, 6, 12, false, NULL),
 
   ('aaaaaaaa-aaaa-aaaa-aaaa-000000000002',
-   'Tritium MSC', 'Tritium',
-   'aaaaaaaa-aaaa-aaaa-aaaa-000000000001',
-   3, 6, 12, false,
-   'No OEM PM schedule — mirrors Autel checklist. Out of warranty.'),
+   'Tritium RTM', 'Tritium',
+   NULL,
+   NULL, NULL, 12, false,
+   'ARG Left (veefil-62100164) and ARG Right (veefil-602200077). Annual PM from Tritium INS.1716 v8 (10 Mar 2026).'),
 
   ('aaaaaaaa-aaaa-aaaa-aaaa-000000000003',
    'ABB Terra53', 'ABB',
@@ -308,7 +325,7 @@ ON CONFLICT (type_name) DO NOTHING;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- Seed: pm_templates  (Autel Q / SA / Annual + Alpitronics Annual)
--- Tritium/ABB use Autel templates via mirror_type_id on unit_types.
+-- ABB Terra53 uses Autel templates via mirror_type_id on unit_types.
 -- ═══════════════════════════════════════════════════════════════════════════════
 INSERT INTO pm_templates
     (id, template_name, unit_type_id, pm_interval, source_document, template_version)
@@ -967,6 +984,184 @@ VALUES
    'Part: YPA.00205 (qty 1). (Section 7.3)',
    'pass_fail_action', true, false, NULL, false,
    'Replace at years 5, 10, 15 per lifecycle schedule. Report voltage faults immediately.')
+ON CONFLICT (id) DO NOTHING;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- v3.3  Tritium RTM native PM template (ARG Left & ARG Right)
+--       Source: Tritium INS.1716 v8 — RTM Preventive Maintenance Schedule
+--       Date:   10 March 2026
+--       Units:  veefil-62100164 (ARG Left), veefil-602200077 (ARG Right)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+INSERT INTO pm_templates
+    (id, template_name, unit_type_id, pm_interval, source_document, template_version)
+VALUES
+  ('bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'Tritium RTM Annual v1.0',
+   'aaaaaaaa-aaaa-aaaa-aaaa-000000000002',
+   'annual',
+   'Tritium INS.1716 v8 — RTM Preventive Maintenance Schedule (10 March 2026)',
+   'v1.0')
+ON CONFLICT (id) DO NOTHING;
+
+UPDATE unit_types SET default_pm_template_id = 'bbbbbbbb-bbbb-bbbb-bbbb-000000000008'
+WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000002';
+
+-- ── Tritium RTM Annual tasks (template ...0008) ───────────────────────────────
+-- Checklist from INS.1716 v8 Section 3.2 (18 items)
+-- Charger Exterior: TR-01–TR-11 | Charger Interior: TR-12–TR-18
+INSERT INTO pm_template_tasks
+    (id, template_id, task_code, task_order, task_category,
+     task_name, task_description, input_type,
+     is_required, is_conditional, conditional_label, critical_fail, fail_guidance)
+VALUES
+  -- ── Charger Exterior ──────────────────────────────────────────────────────
+  ('ffffffff-0008-0000-0000-000000000001',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-01', 1, 'Charger Exterior',
+   'HMI screen',
+   'Inspect HMI screen for cracks, damage, or touch-response failure. (INS.1716 §3.2 #4 — if damaged see FSP.090)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged: see FSP.090 for screen replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000002',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-02', 2, 'Charger Exterior',
+   'HMI buttons',
+   'Inspect and test all HMI buttons for physical damage or failure to actuate. (INS.1716 §3.2 #5 — if damaged see FSP.2241)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged: see FSP.2241 for HMI button replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000003',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-03', 3, 'Charger Exterior',
+   'CCR / RFID reader',
+   'Inspect CCR/RFID reader for physical damage and verify operation with a known valid card. (INS.1716 §3.2 #6 — if damaged see FSP.1626 / 1708)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged: see FSP.1626 (CCR) or FSP.1708 (RFID reader) for replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000004',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-04', 4, 'Charger Exterior',
+   'Exterior panels',
+   'Clean exterior panels and inspect for physical damage, corrosion, or deformation. Report damage — do not field-repair panels. (INS.1716 §3.2 #7)',
+   'pass_fail_action', true, false, NULL, false,
+   'Clean panels. Report any structural damage or significant corrosion.'),
+
+  ('ffffffff-0008-0000-0000-000000000005',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-05', 5, 'Charger Exterior',
+   'DC Meter display enclosure',
+   'Clean DC meter display enclosure and inspect for damage or seal failure. Report any damage. (INS.1716 §3.2 #8)',
+   'pass_fail_action', true, false, NULL, false,
+   'Clean enclosure. Report any cracking, seal failure, or display damage.'),
+
+  ('ffffffff-0008-0000-0000-000000000006',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-06', 6, 'Charger Exterior',
+   'Charge cables',
+   'Inspect all charge cables for cuts, abrasion, kinking, connector damage, or jacket failure. Replace if damaged. (INS.1716 §3.2 #9 — see FSP.088 / FSP.089)',
+   'pass_fail_action', true, false, NULL, false,
+   'Replace damaged cable: see FSP.088 (charge cable) and FSP.089 (cable management retrieval cord). Record in Parts Replaced.'),
+
+  ('ffffffff-0008-0000-0000-000000000007',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-07', 7, 'Charger Exterior',
+   'Status indicator, downlights, 4G antenna',
+   'Inspect status indicator light, downlights, and 4G antenna for physical damage or operational failure. (INS.1716 §3.2 #11 — if damaged see FSP.1547)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged: see FSP.1547 for replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000008',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-08', 8, 'Charger Exterior',
+   'Main radiator fan',
+   'Clean main radiator fan blades and housing. Inspect for damage, excessive noise, or bearing wear. (INS.1716 §3.2 #12 — if damaged see FSP.1648)',
+   'pass_fail_action', true, false, NULL, false,
+   'Clean fan. If damaged: see FSP.1648 for fan replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000009',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-09', 9, 'Charger Exterior',
+   'Main radiator',
+   'Clean main radiator fins and inspect for damage, corrosion, or fin blockage affecting airflow. (INS.1716 §3.2 #13 — if damaged see FSP.2240)',
+   'pass_fail_action', true, false, NULL, false,
+   'Clean radiator fins. If damaged: see FSP.2240 for radiator replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000010',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-10', 10, 'Charger Exterior',
+   'Radiator coolant hose & UV protection sleeves',
+   'Inspect radiator coolant hose for cracks, leaks, or swelling. Inspect UV protection sleeves for deterioration. '
+   'Replacement schedule: 2 years (high usage) / 4 years (low usage) — see FSP.2489. (INS.1716 §3.2 #1)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged or due for replacement: see FSP.2489. Install UV protection sleeves on all replacements. Record in Parts Replaced.'),
+
+  ('ffffffff-0008-0000-0000-000000000011',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-11', 11, 'Charger Exterior',
+   'Door latches',
+   'Inspect all door latches for proper engagement, wear, or damage. Verify doors close and seal correctly. (INS.1716 §3.2 #16 — if damaged see FSP.2238)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged: see FSP.2238 for door latch replacement procedure.'),
+
+  -- ── Charger Interior ──────────────────────────────────────────────────────
+  ('ffffffff-0008-0000-0000-000000000012',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-12', 12, 'Charger Interior',
+   'Door seal foam',
+   'Inspect door seal foam for tears, compression set, missing sections, or loss of sealing effectiveness. (INS.1716 §3.2 #2 — if damaged see FSP.2236)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged: see FSP.2236 for door seal foam replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000013',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-13', 13, 'Charger Interior',
+   'Door seal EMC gasket',
+   'Inspect EMC gasket for continuity, gaps, compression set, or physical damage. EMC integrity is required for certification compliance. Report if damaged. (INS.1716 §3.2 #3)',
+   'pass_fail', true, false, NULL, false,
+   'Report any EMC gasket damage immediately. Do not return to service with a compromised EMC gasket without engineering authorisation.'),
+
+  ('ffffffff-0008-0000-0000-000000000014',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-14', 14, 'Charger Interior',
+   'Internal fans',
+   'Inspect all internal cooling fans for proper operation, unusual noise, vibration, or obstructions. (INS.1716 §3.2 #10 — if damaged see FSP.1650)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged: see FSP.1650 for internal fan replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000015',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-15', 15, 'Charger Interior',
+   'Coolant level',
+   'Check coolant level in the cooling circuit reservoir. Top up (re-juice) with approved coolant if required. (INS.1716 §3.2 #14 — pump replacement see FSP.1643)',
+   'pass_fail_action', true, false, NULL, false,
+   'Top up coolant if low. If level drops rapidly between visits, inspect for leaks before refilling. Record any top-up in Parts Replaced.'),
+
+  ('ffffffff-0008-0000-0000-000000000016',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-16', 16, 'Charger Interior',
+   'Internal heat exchanger',
+   'Inspect internal heat exchanger for physical damage, coolant leaks, or fouling of heat transfer surfaces. (INS.1716 §3.2 #15 — if damaged see FSP.2239)',
+   'pass_fail_action', true, false, NULL, false,
+   'If damaged: see FSP.2239 for heat exchanger replacement procedure.'),
+
+  ('ffffffff-0008-0000-0000-000000000017',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-17', 17, 'Charger Interior',
+   'Torque check — input cable connections',
+   'Inspect and retorque all input cable connections per Tritium torque specifications. '
+   'LOTO REQUIRED — fully de-energize charger before opening cabinet. (INS.1716 §3.2 #17)',
+   'completed', true, false, NULL, false,
+   'LOTO must be in place before opening cabinet. Retorque to Tritium specification. Document any loose connections found.'),
+
+  ('ffffffff-0008-0000-0000-000000000018',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000008',
+   'TR-18', 18, 'Charger Interior',
+   'SPD — status check',
+   'Inspect the surge protection device (SPD) status indicator window. Verify SPD is operational and not in a fault or end-of-life state. (INS.1716 §3.2 #18)',
+   'pass_fail', true, false, NULL, false,
+   'If SPD indicator shows fault or replacement required, replace SPD before returning charger to service.')
 ON CONFLICT (id) DO NOTHING;
 """
 

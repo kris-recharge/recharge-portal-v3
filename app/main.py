@@ -300,10 +300,10 @@ VALUES
    'Autel DC Fast', 'Autel', NULL, 3, 6, 12, false, NULL),
 
   ('aaaaaaaa-aaaa-aaaa-aaaa-000000000002',
-   'Tritium RTM', 'Tritium',
-   NULL,
-   NULL, NULL, 12, false,
-   'ARG Left (veefil-62100164) and ARG Right (veefil-602200077). Annual PM from Tritium INS.1716 v8 (10 Mar 2026).'),
+   'Tritium MSC', 'Tritium',
+   'aaaaaaaa-aaaa-aaaa-aaaa-000000000001',
+   3, 6, 12, false,
+   'No OEM PM schedule — mirrors Autel checklist. Out of warranty.'),
 
   ('aaaaaaaa-aaaa-aaaa-aaaa-000000000003',
    'ABB Terra53', 'ABB',
@@ -992,6 +992,16 @@ ON CONFLICT (id) DO NOTHING;
 --       Date:   10 March 2026
 --       Units:  veefil-62100164 (ARG Left), veefil-602200077 (ARG Right)
 -- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Rename unit type and remove Autel mirror (idempotent: WHERE guards re-run)
+UPDATE unit_types SET
+    type_name                  = 'Tritium RTM',
+    mirror_type_id             = NULL,
+    interval_quarterly_months  = NULL,
+    interval_semiannual_months = NULL,
+    notes = 'ARG Left (veefil-62100164) and ARG Right (veefil-602200077). Annual PM from Tritium INS.1716 v8 (10 Mar 2026).'
+WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000002'
+  AND type_name = 'Tritium MSC';
 
 INSERT INTO pm_templates
     (id, template_name, unit_type_id, pm_interval, source_document, template_version)

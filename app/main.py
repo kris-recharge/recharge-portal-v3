@@ -321,7 +321,9 @@ VALUES
    'Alpitronics HYC_400UL', 'Alpitronic', NULL,
    NULL, NULL, 12, true,
    'Annual only. Hyperdoc required. Operator credentials required.')
-ON CONFLICT (type_name) DO NOTHING;
+-- v3.2: key on the fixed UUID (id), not type_name, so DB-side renames
+-- (e.g. Tritium MSC → Tritium RTM) don't cause a PK collision on boot.
+ON CONFLICT (id) DO NOTHING;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- Seed: pm_templates  (Autel Q / SA / Annual + Alpitronics Annual)

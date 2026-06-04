@@ -82,6 +82,23 @@ function pmDueColor(dueDate: string | null, overdue: boolean): string {
   return 'text-green-600'
 }
 
+// v3.2: PM Health KPI — quick "how far out is the next PM" visual.
+// Whole days from now until the due date (negative = overdue).
+function daysUntil(dueDate: string | null): number | null {
+  if (!dueDate) return null
+  return Math.round((new Date(dueDate).getTime() - Date.now()) / 86_400_000)
+}
+
+// Short countdown label for a unit's next PM, e.g. "in 12 days", "due today",
+// "5 days overdue", or "—" when nothing is scheduled.
+function pmCountdownLabel(dueDate: string | null): string {
+  const d = daysUntil(dueDate)
+  if (d === null) return '—'
+  if (d < 0)  return `${Math.abs(d)} day${Math.abs(d) === 1 ? '' : 's'} overdue`
+  if (d === 0) return 'due today'
+  return `in ${d} day${d === 1 ? '' : 's'}`
+}
+
 // ── Warranty badge ─────────────────────────────────────────────────────────────
 
 function WarrantyBadge({ unit }: { unit: MaintenanceUnit }) {
@@ -210,12 +227,62 @@ function UnitCard({ unit, onClick }: { unit: MaintenanceUnit; onClick: () => voi
           <div className={`font-medium ${nextDueColor}`}>
             {unit.next_pm_due_date ? fmtDate(unit.next_pm_due_date) : 'Not scheduled'}
           </div>
+          {/* v3.2: glanceable countdown to next PM */}
+          {unit.next_pm_due_date && (
+            <div className={`text-[11px] mt-0.5 ${nextDueColor}`}>
+              {pmCountdownLabel(unit.next_pm_due_date)}
+            </div>
+          )}
         </div>
       </div>
 
       {/* Alert badges */}
       <AlertBadges unit={unit} />
     </button>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Fleet PM Health KPI strip (v3.2)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// At-a-glance counts of how the fleet sits relative to its next PM dates.
+function FleetPMHealth({ units }: { units: MaintenanceUnit[] }) {
+  const active = units.filter(u => u.status !== 'retired')
+  let overdue = 0, dueSoon = 0, onTrack = 0, unscheduled = 0
+  let soonest: { name: string; days: number } | null = null
+
+  for (const u of active) {
+    const d = daysUntil(u.next_pm_due_date)
+    if (d === null) { unscheduled++; continue }
+    if (d < 0)       overdue++
+    else if (d <= 30) dueSoon++
+    else              onTrack++
+    if (d >= 0 && (soonest === null || d < soonest.days)) soonest = { name: u.name, days: d }
+  }
+
+  const cards = [
+    { label: 'PM Overdue',  value: overdue,     cls: 'bg-red-50 text-red-700 border-red-200' },
+    { label: 'Due ≤30 days', value: dueSoon,    cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    { label: 'On Track',    value: onTrack,     cls: 'bg-green-50 text-green-700 border-green-200' },
+    { label: 'Unscheduled', value: unscheduled, cls: 'bg-gray-50 text-gray-500 border-gray-200' },
+  ]
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {cards.map(c => (
+        <div key={c.label} className={`rounded-xl border p-3 ${c.cls}`}>
+          <div className="text-2xl font-bold leading-none">{c.value}</div>
+          <div className="text-xs font-medium mt-1">{c.label}</div>
+          {c.label === 'Due ≤30 days' && soonest && (
+            <div className="text-[11px] mt-1 opacity-80">
+              Next: {soonest.name} {pmCountdownLabel(
+                new Date(Date.now() + soonest.days * 86_400_000).toISOString())}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -296,6 +363,9 @@ function FleetOverview({ userEmail, onSelectUnit }: FleetOverviewProps) {
           <RefreshCw size={13} /> Refresh
         </button>
       </div>
+
+      {/* PM Health KPI strip (v3.2) */}
+      <FleetPMHealth units={filtered} />
 
       {/* Search and filters */}
       <div className="flex flex-wrap gap-2">

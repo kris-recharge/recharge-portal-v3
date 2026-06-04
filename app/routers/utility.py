@@ -39,6 +39,73 @@ ADMIN_EMAIL = "kris.hall@rechargealaska.net"
 VALID_UTILITIES = {"gvea", "cvea", "cea"}
 
 
+# v3.2: Daily metered-vs-dispensed per meter.
+# A meter maps to a site (whole-site meter, e.g. ARG) and optionally narrows to a
+# single charger (e.g. each Delta unit has its own meter at one shared site).
+# Params: $1 unrestricted (bool), $2 allowed station ids (text[]),
+#         $3 start date, $4 end date.
+UTILITY_EFFICIENCY_SQL = """
+    WITH meters AS (
+        SELECT ua.account_number, ua.utility, ua.display_name,
+               ua.site_id, ua.charger_id,
+               s.name  AS site_name,
+               ch.name AS unit_name
+        FROM utility_accounts ua
+        JOIN sites s          ON s.id  = ua.site_id
+        LEFT JOIN chargers ch ON ch.id = ua.charger_id
+        WHERE ua.site_id IS NOT NULL
+          AND ua.enabled = true
+          AND (
+                $1::boolean
+                OR EXISTS (
+                    SELECT 1 FROM chargers c
+                    WHERE c.external_id = ANY($2::text[])
+                      AND ( (ua.charger_id IS NOT NULL AND c.id = ua.charger_id)
+                            OR (ua.charger_id IS NULL AND c.site_id = ua.site_id) )
+                )
+          )
+    ),
+    meter_stations AS (
+        SELECT m.account_number, c.external_id AS station_id
+        FROM meters m
+        JOIN chargers c ON (
+             (m.charger_id IS NOT NULL AND c.id = m.charger_id)
+          OR (m.charger_id IS NULL AND c.site_id = m.site_id)
+        )
+    ),
+    sess AS (
+        SELECT ms.account_number,
+               MIN(mv.ts)                            AS start_utc,
+               MAX(mv.energy_wh) - MIN(mv.energy_wh) AS energy_wh
+        FROM meter_stations ms
+        JOIN meter_values_parsed mv ON mv.station_id = ms.station_id
+        WHERE mv.transaction_id IS NOT NULL
+          AND mv.ts >= $3::date
+          AND mv.ts <  ($4::date + INTERVAL '2 days')
+        GROUP BY ms.account_number, mv.station_id, mv.connector_id, mv.transaction_id
+    )
+    SELECT m.account_number, m.utility, m.display_name, m.site_name, m.unit_name,
+           u.interval_start, u.interval_end,
+           u.kwh AS metered_kwh,
+           COALESCE(SUM(sess.energy_wh) FILTER (
+               WHERE sess.start_utc >= u.interval_start
+                 AND sess.start_utc <  u.interval_end
+           ), 0) / 1000.0 AS dispensed_kwh
+    FROM utility_usage u
+    JOIN meters m   ON m.account_number = u.account_number
+    LEFT JOIN sess  ON sess.account_number = m.account_number
+    WHERE u.interval_start >= $3::date
+      AND u.interval_start <  ($4::date + INTERVAL '1 day')
+      -- v3.2: CEA (mymeterQ) emits overlapping rolling-24h reads stamped hourly;
+      -- keep only the canonical midnight-UTC daily read. GVEA/CVEA are already
+      -- midnight-stamped daily, so this is a no-op for them.
+      AND (u.interval_start AT TIME ZONE 'UTC')::time = TIME '00:00:00'
+    GROUP BY m.account_number, m.utility, m.display_name, m.site_name, m.unit_name,
+             u.interval_start, u.interval_end, u.kwh
+    ORDER BY m.site_name, m.account_number, u.interval_start
+"""
+
+
 # ── Admin guard (reuse same pattern as admin.py) ──────────────────────────────
 
 async def _require_admin(user: CurrentUser) -> PortalUser:
@@ -59,6 +126,8 @@ class AccountCreate(BaseModel):
     customer_number:         str | None = None
     system_of_record:        str = "UTILITY"
     meter_group_id:          str | None = None
+    site_id:                 str | None = None   # v3.2: links meter to a site
+    charger_id:              str | None = None   # v3.2: optional single-unit narrowing
     enabled:                 bool = True
 
 
@@ -67,6 +136,8 @@ class AccountPatch(BaseModel):
     service_location_number: str | None = None
     customer_number:         str | None = None
     meter_group_id:          str | None = None
+    site_id:                 str | None = None   # v3.2: links meter to a site
+    charger_id:              str | None = None   # v3.2: optional single-unit narrowing
     enabled:                 bool | None = None
 
 
@@ -87,12 +158,16 @@ async def list_accounts(_: AdminUser):
     async with acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, utility, account_number, display_name,
-                   service_location_number, customer_number,
-                   system_of_record, meter_group_id,
-                   enabled, last_collected, last_error, created_at
-            FROM utility_accounts
-            ORDER BY utility, account_number
+            SELECT ua.id, ua.utility, ua.account_number, ua.display_name,
+                   ua.service_location_number, ua.customer_number,
+                   ua.system_of_record, ua.meter_group_id,
+                   ua.site_id::text AS site_id, s.name AS site_name,
+                   ua.charger_id::text AS charger_id, ch.name AS unit_name,
+                   ua.enabled, ua.last_collected, ua.last_error, ua.created_at
+            FROM utility_accounts ua
+            LEFT JOIN sites s     ON s.id  = ua.site_id
+            LEFT JOIN chargers ch ON ch.id = ua.charger_id
+            ORDER BY ua.utility, ua.account_number
             """
         )
     result = []
@@ -118,19 +193,28 @@ async def create_account(body: AccountCreate, _: AdminUser):
         try:
             row = await conn.fetchrow(
                 """
-                INSERT INTO utility_accounts
-                    (utility, account_number, display_name,
-                     service_location_number, customer_number,
-                     system_of_record, meter_group_id, enabled)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                RETURNING id, utility, account_number, display_name,
-                          service_location_number, customer_number,
-                          system_of_record, meter_group_id,
-                          enabled, last_collected, last_error, created_at
+                WITH ins AS (
+                    INSERT INTO utility_accounts
+                        (utility, account_number, display_name,
+                         service_location_number, customer_number,
+                         system_of_record, meter_group_id, site_id, charger_id, enabled)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid, $9::uuid, $10)
+                    RETURNING *
+                )
+                SELECT ins.id, ins.utility, ins.account_number, ins.display_name,
+                       ins.service_location_number, ins.customer_number,
+                       ins.system_of_record, ins.meter_group_id,
+                       ins.site_id::text AS site_id, s.name AS site_name,
+                       ins.charger_id::text AS charger_id, ch.name AS unit_name,
+                       ins.enabled, ins.last_collected, ins.last_error, ins.created_at
+                FROM ins
+                LEFT JOIN sites s     ON s.id  = ins.site_id
+                LEFT JOIN chargers ch ON ch.id = ins.charger_id
                 """,
                 body.utility, body.account_number, body.display_name,
                 body.service_location_number, body.customer_number,
-                body.system_of_record, body.meter_group_id, body.enabled,
+                body.system_of_record, body.meter_group_id,
+                body.site_id, body.charger_id, body.enabled,
             )
         except Exception as exc:
             if "unique" in str(exc).lower():
@@ -156,22 +240,37 @@ async def update_account(
     if body.customer_number         is not None: fields["customer_number"]         = body.customer_number
     if body.meter_group_id          is not None: fields["meter_group_id"]          = body.meter_group_id
     if body.enabled                 is not None: fields["enabled"]                 = body.enabled
+    # v3.2: site_id / charger_id — empty string clears the assignment (NULL).
+    if body.site_id                 is not None: fields["site_id"]                 = body.site_id or None
+    if body.charger_id              is not None: fields["charger_id"]              = body.charger_id or None
 
     if not fields:
         raise HTTPException(400, "No fields to update")
 
-    set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
+    # v3.2: uuid columns need an explicit ::uuid cast in the placeholder.
+    set_clause = ", ".join(
+        f"{k} = ${i+2}::uuid" if k in ("site_id", "charger_id") else f"{k} = ${i+2}"
+        for i, k in enumerate(fields)
+    )
     values     = [account_id] + list(fields.values())
 
     async with acquire() as conn:
         row = await conn.fetchrow(
             f"""
-            UPDATE utility_accounts SET {set_clause}
-            WHERE id = $1
-            RETURNING id, utility, account_number, display_name,
-                      service_location_number, customer_number,
-                      system_of_record, meter_group_id,
-                      enabled, last_collected, last_error, created_at
+            WITH upd AS (
+                UPDATE utility_accounts SET {set_clause}
+                WHERE id = $1
+                RETURNING *
+            )
+            SELECT upd.id, upd.utility, upd.account_number, upd.display_name,
+                   upd.service_location_number, upd.customer_number,
+                   upd.system_of_record, upd.meter_group_id,
+                   upd.site_id::text AS site_id, s.name AS site_name,
+                   upd.charger_id::text AS charger_id, ch.name AS unit_name,
+                   upd.enabled, upd.last_collected, upd.last_error, upd.created_at
+            FROM upd
+            LEFT JOIN sites s     ON s.id  = upd.site_id
+            LEFT JOIN chargers ch ON ch.id = upd.charger_id
             """,
             *values,
         )
@@ -289,6 +388,67 @@ async def get_usage(
                 d[key] = d[key].isoformat()
         result.append(d)
     return {"usage": result, "count": len(result)}
+
+
+# ── Site efficiency (v3.2) ────────────────────────────────────────────────────
+
+@router.get("/efficiency")
+async def utility_efficiency(
+    user:       CurrentUser,
+    start_date: str | None = Query(None),   # YYYY-MM-DD (AK)
+    end_date:   str | None = Query(None),   # YYYY-MM-DD (AK)
+):
+    """v3.2: Daily site efficiency per meter.
+
+    efficiency_pct = (session kWh dispensed at the meter's site during the
+    utility interval) / (utility metered kWh) * 100.
+
+    Access scope follows unit access: a user who can see any unit at a site
+    sees that site's meter(s). Admins (allowed_evse_ids = None) see all meters
+    that have been assigned a site.
+    """
+    # ── Resolve access scope ──────────────────────────────────────────────────
+    allowed = None if (user.email == ADMIN_EMAIL or DEV_BYPASS_AUTH) else user.allowed_evse_ids
+    unrestricted = allowed is None or "__ALL__" in (allowed or [])
+    if not unrestricted and not allowed:
+        return {"meters": []}          # [] = no access
+    allowed_ids = list(allowed) if (allowed and not unrestricted) else []
+
+    # ── Date window (default: last 30 days) ───────────────────────────────────
+    today = datetime.now(timezone.utc).date()
+    start = date.fromisoformat(start_date) if start_date else date.fromordinal(today.toordinal() - 29)
+    end   = date.fromisoformat(end_date)   if end_date   else today
+
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            UTILITY_EFFICIENCY_SQL,
+            unrestricted, allowed_ids, start, end,
+        )
+
+    # ── Group daily rows by meter ─────────────────────────────────────────────
+    meters: dict[str, dict] = {}
+    for r in rows:
+        key = r["account_number"]
+        if key not in meters:
+            meters[key] = {
+                "account_number": r["account_number"],
+                "utility":        r["utility"],
+                "display_name":   r["display_name"],
+                "site_name":      r["site_name"],
+                "unit_name":      r["unit_name"],
+                "days":           [],
+            }
+        metered   = float(r["metered_kwh"])   if r["metered_kwh"]   is not None else 0.0
+        dispensed = float(r["dispensed_kwh"]) if r["dispensed_kwh"] is not None else 0.0
+        eff = round(dispensed / metered * 100.0, 1) if metered > 0 else None
+        meters[key]["days"].append({
+            "date":           r["interval_start"].date().isoformat(),
+            "metered_kwh":    round(metered, 3),
+            "dispensed_kwh":  round(dispensed, 3),
+            "efficiency_pct": eff,
+        })
+
+    return {"meters": list(meters.values())}
 
 
 # ── Manual collection trigger ─────────────────────────────────────────────────

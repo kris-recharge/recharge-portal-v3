@@ -403,10 +403,31 @@ export interface UtilityAccount {
   customer_number: string | null
   system_of_record: string
   meter_group_id: string | null
+  site_id: string | null      // v3.2: meter→site link
+  site_name: string | null    // v3.2: resolved site name
+  charger_id: string | null   // v3.2: optional single-unit narrowing
+  unit_name: string | null    // v3.2: resolved charger name
   enabled: boolean
   last_collected: string | null
   last_error: string | null
   created_at: string
+}
+
+// v3.2: Daily site efficiency (dispensed ÷ metered) per meter.
+export interface UtilityEfficiencyDay {
+  date: string
+  metered_kwh: number
+  dispensed_kwh: number
+  efficiency_pct: number | null
+}
+
+export interface UtilityEfficiencyMeter {
+  account_number: string
+  utility: string
+  display_name: string
+  site_name: string
+  unit_name: string | null   // v3.2: set when meter narrows to a single unit
+  days: UtilityEfficiencyDay[]
 }
 
 export interface UtilityCredential {
@@ -438,6 +459,8 @@ export const createUtilityAccount = (body: {
   service_location_number?: string | null
   customer_number?: string | null
   meter_group_id?: string | null
+  site_id?: string | null
+  charger_id?: string | null
   enabled?: boolean
 }): Promise<UtilityAccount> =>
   apiFetch<UtilityAccount>('/api/utility/accounts', {
@@ -451,12 +474,25 @@ export const updateUtilityAccount = (
     service_location_number: string | null
     customer_number: string | null
     meter_group_id: string | null
+    site_id: string | null
+    charger_id: string | null
     enabled: boolean
   }>,
 ): Promise<UtilityAccount> =>
   apiFetch<UtilityAccount>(`/api/utility/accounts/${id}`, {
     method: 'PATCH', body: JSON.stringify(body),
   })
+
+// v3.2: per-meter daily efficiency, scoped to the caller's unit access.
+export const fetchUtilityEfficiency = (
+  startDate?: string, endDate?: string,
+): Promise<{ meters: UtilityEfficiencyMeter[] }> => {
+  const qs = new URLSearchParams()
+  if (startDate) qs.set('start_date', startDate)
+  if (endDate)   qs.set('end_date', endDate)
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return apiFetch<{ meters: UtilityEfficiencyMeter[] }>(`/api/utility/efficiency${suffix}`)
+}
 
 export const deleteUtilityAccount = (id: number): Promise<void> =>
   apiFetch<void>(`/api/utility/accounts/${id}`, { method: 'DELETE' })

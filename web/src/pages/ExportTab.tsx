@@ -1,4 +1,5 @@
-/** Data Export tab — inherits filters from Sessions tab; date-range, EVSE, CSV/XLSX download. */
+/** Data Export tab — inherits filters from Sessions tab; date-range, EVSE, XLSX download.
+ *  v3.2: CSV option removed — export is XLSX-only. */
 
 import { useState } from 'react'
 import { buildExportUrl, EVSE_OPTIONS } from '../lib/api'
@@ -28,7 +29,7 @@ export function ExportTab({ initialFilters }: Props) {
   const [startDate,  setStartDate]  = useState(initialFilters?.startDate  || daysAgoAK(7))
   const [endDate,    setEndDate]    = useState(initialFilters?.endDate    || todayAK())
   const [stationIds, setStationIds] = useState<string[]>(initialFilters?.stationIds ?? [])
-  const [format,     setFormat]     = useState<'csv' | 'xlsx'>('csv')
+  const format = 'xlsx' as const   // v3.2: XLSX-only export
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState<string | null>(null)
 
@@ -139,24 +140,6 @@ export function ExportTab({ initialFilters }: Props) {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Format</label>
-            <div className="flex gap-3">
-              {(['csv', 'xlsx'] as const).map(f => (
-                <button
-                  key={f}
-                  onClick={() => setFormat(f)}
-                  className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${
-                    format === f
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
-                  }`}
-                >
-                  {f.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
 
         <button
@@ -174,9 +157,9 @@ export function ExportTab({ initialFilters }: Props) {
         <p className="text-xs text-gray-400">
           Sessions sheet: Start/End DateTime (AK), EVSE, Location, Connector, Type,
           Max kW, Energy kWh, Duration (min), SoC Start/End, Authentication, Authentication Method, Est. Revenue, VID.
-          {' '}<span className="font-medium text-gray-500">XLSX only:</span>{' '}
-          includes a second <em>Vendor Faults</em> sheet with all non-NoError
-          StatusNotifications for the selected date range.
+          {' '}Also includes a <em>Vendor Faults</em> sheet (non-NoError
+          StatusNotifications) and a <em>Utility Reads</em> sheet (daily metered vs.
+          dispensed kWh and efficiency % per site) for the selected date range.
         </p>
       </div>
     </div>

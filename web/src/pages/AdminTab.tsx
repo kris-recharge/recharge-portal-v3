@@ -580,10 +580,19 @@ function UtilityAccountsSection() {
   const { data: creds = [], isLoading: credsLoading } =
     useQuery({ queryKey: ['utility-credentials'], queryFn: fetchUtilityCredentials })
 
+  // v3.2: sites + chargers for meter→site / meter→unit assignment
+  const { data: sites = [] } = useQuery({ queryKey: ['sites'], queryFn: fetchSites })
+  const { data: overview } = useQuery({
+    queryKey: ['maintenance-overview', false],
+    queryFn: () => fetchMaintenanceOverview(false),
+  })
+  const chargers = overview?.chargers ?? []
+
   // ── Add account form state ─────────────────────────────────────────────────
   const blankAcct = {
     utility: 'gvea' as UtilityName, account_number: '', display_name: '',
     service_location_number: '', customer_number: '', meter_group_id: '',
+    site_id: '', charger_id: '',   // v3.2
   }
   const [acctForm, setAcctForm] = useState(blankAcct)
   const [acctStatus, setAcctStatus] = useState({ ok: true, msg: '' })
@@ -596,6 +605,8 @@ function UtilityAccountsSection() {
       service_location_number: acctForm.service_location_number.trim() || null,
       customer_number:         acctForm.customer_number.trim() || null,
       meter_group_id:          acctForm.meter_group_id.trim() || null,
+      site_id:                 acctForm.site_id || null,      // v3.2
+      charger_id:              acctForm.charger_id || null,   // v3.2
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['utility-accounts'] })
@@ -676,7 +687,8 @@ function UtilityAccountsSection() {
                 <tr className="border-b border-gray-200 text-left text-gray-500">
                   <th className="pb-2 pr-4 font-medium">Utility</th>
                   <th className="pb-2 pr-4 font-medium">Account #</th>
-                  <th className="pb-2 pr-4 font-medium">Site Name</th>
+                  <th className="pb-2 pr-4 font-medium">Site</th>
+                  <th className="pb-2 pr-4 font-medium">Unit</th>
                   <th className="pb-2 pr-4 font-medium">Last Collected</th>
                   <th className="pb-2 pr-4 font-medium">Status</th>
                   <th className="pb-2 pr-4 font-medium">Enabled</th>
@@ -688,6 +700,12 @@ function UtilityAccountsSection() {
                   <AccountRow
                     key={a.id}
                     account={a}
+                    sites={sites}
+                    chargers={chargers}
+                    onAssignSite={(site_id) => updateUtilityAccount(a.id, { site_id, charger_id: '' })
+                      .then(() => qc.invalidateQueries({ queryKey: ['utility-accounts'] }))}
+                    onAssignCharger={(charger_id) => updateUtilityAccount(a.id, { charger_id })
+                      .then(() => qc.invalidateQueries({ queryKey: ['utility-accounts'] }))}
                     onToggle={(enabled) => updateUtilityAccount(a.id, { enabled })
                       .then(() => qc.invalidateQueries({ queryKey: ['utility-accounts'] }))}
                     onDelete={() => {
@@ -727,6 +745,24 @@ function UtilityAccountsSection() {
             <input className={inputCls} placeholder="e.g. Delta Junction EVSE"
               value={acctForm.display_name}
               onChange={e => setAcctForm(f => ({ ...f, display_name: e.target.value }))} />
+          </Field>
+          <Field label="Site (for efficiency)">
+            <select className={inputCls}
+              value={acctForm.site_id}
+              onChange={e => setAcctForm(f => ({ ...f, site_id: e.target.value, charger_id: '' }))}>
+              <option value="">— Unassigned —</option>
+              {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Specific unit (optional)">
+            <select className={inputCls}
+              value={acctForm.charger_id}
+              disabled={!acctForm.site_id}
+              onChange={e => setAcctForm(f => ({ ...f, charger_id: e.target.value }))}>
+              <option value="">Whole site</option>
+              {chargers.filter(c => c.site_id === acctForm.site_id)
+                .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
           </Field>
           {fields.srvLoc && (
             <Field label="Service Location #">
@@ -832,20 +868,44 @@ function UtilityAccountsSection() {
 
 function AccountRow({
   account: a,
+  sites,
+  chargers,
+  onAssignSite,
+  onAssignCharger,
   onToggle,
   onDelete,
 }: {
   account: UtilityAccount
+  sites: Site[]
+  chargers: MaintenanceUnit[]
+  onAssignSite: (siteId: string) => void
+  onAssignCharger: (chargerId: string) => void
   onToggle: (enabled: boolean) => void
   onDelete: () => void
 }) {
+  const selectCls = "border border-gray-200 rounded px-2 py-1 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-300"
   return (
     <tr className="border-b border-gray-100 hover:bg-gray-50">
       <td className="py-2 pr-4">
         <span className="font-medium text-gray-700">{UTILITY_LABELS[a.utility] ?? a.utility}</span>
       </td>
       <td className="py-2 pr-4 font-mono text-gray-600">{a.account_number}</td>
-      <td className="py-2 pr-4 text-gray-600">{a.display_name || <span className="text-gray-300 italic">—</span>}</td>
+      {/* v3.2: meter→site assignment (drives Utility Reads efficiency + scoping) */}
+      <td className="py-2 pr-4">
+        <select value={a.site_id ?? ''} onChange={e => onAssignSite(e.target.value)} className={selectCls}>
+          <option value="">— Unassigned —</option>
+          {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </td>
+      {/* v3.2: optional single-unit narrowing (e.g. one meter per Delta charger) */}
+      <td className="py-2 pr-4">
+        <select value={a.charger_id ?? ''} disabled={!a.site_id}
+          onChange={e => onAssignCharger(e.target.value)} className={selectCls}>
+          <option value="">Whole site</option>
+          {chargers.filter(c => c.site_id === a.site_id)
+            .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </td>
       <td className="py-2 pr-4 text-gray-500">{fmtCollected(a.last_collected)}</td>
       <td className="py-2 pr-4">
         {a.last_error

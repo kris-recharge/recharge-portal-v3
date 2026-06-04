@@ -1,8 +1,13 @@
-"""GET /api/export — CSV/XLSX download of charging sessions + vendor faults."""
+"""GET /api/export — XLSX download of charging sessions + vendor faults.
+
+v3.2: Timestamps are now written as native Excel datetime cells (not strings) so
+Excel recognises them without manual reformatting; Vendor Error Code is written as
+a real number (no "Number stored as Text" warning); rows are ordered by session
+START time, newest on top; and the CSV format option has been removed (xlsx only).
+"""
 
 from __future__ import annotations
 
-import csv
 import math
 import io
 from datetime import datetime, timezone
@@ -14,19 +19,28 @@ from fastapi.responses import StreamingResponse
 from ..auth import CurrentUser, filter_evse_ids
 from ..constants import connector_type_for, display_name, get_all_station_ids, location_label
 from ..db import acquire
+from .utility import UTILITY_EFFICIENCY_SQL  # v3.2: shared metered-vs-dispensed query
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 _AK = ZoneInfo("America/Anchorage")
 
+# v3.2: Excel display format for the datetime columns — "m/dd/yy h:mm:ss".
+_XLSX_DT_FORMAT = "m/dd/yy h:mm:ss"
 
-def _fmt_ak(dt: datetime | None) -> str:
-    """Format UTC datetime as mm/dd/yy hh:mm:ss in Alaska time."""
+
+def _ak_dt(dt: datetime | None) -> datetime | None:
+    """Convert a UTC datetime to a naive Alaska-local datetime for Excel.
+
+    v3.2: returns a real datetime (Excel stores it as a date serial) instead of a
+    preformatted string, so Excel recognises the cell as a date/time natively.
+    """
     if dt is None:
-        return ""
+        return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(_AK).strftime("%m/%d/%y %H:%M:%S")
+    # Drop tzinfo — Excel has no concept of timezone; values are AK-local wall time.
+    return dt.astimezone(_AK).replace(tzinfo=None)
 
 
 def _pct(val) -> str:
@@ -61,7 +75,7 @@ async def export_sessions(
     start_date: str = Query(..., description="YYYY-MM-DD Alaska local"),
     end_date: str = Query(..., description="YYYY-MM-DD Alaska local"),
     station_id: list[str] | None = Query(None),
-    format: str = Query("csv", pattern="^(csv|xlsx)$"),
+    format: str = Query("xlsx", pattern="^(xlsx)$"),  # v3.2: CSV removed, xlsx only
 ):
     all_ids = get_all_station_ids()
     allowed = filter_evse_ids(all_ids, user.allowed_evse_ids)
@@ -118,7 +132,10 @@ async def export_sessions(
                 WHERE m.station_id     = ANY($1::text[])
                   AND m.transaction_id IS NOT NULL
                   AND m.ts >= $2
-                  AND m.ts <= $3
+                  -- v3.2: filter by session START time. Widen the reading window
+                  -- 1 day past end so sessions that START in range are aggregated
+                  -- in full (not truncated); the outer WHERE drops later starts.
+                  AND m.ts <= $3::timestamptz + INTERVAL '1 day'
                 GROUP BY m.station_id, m.connector_id, m.transaction_id
             )
             SELECT
@@ -151,7 +168,8 @@ async def export_sessions(
                   AND (effective_end IS NULL OR effective_end > s.start_utc)
                 ORDER BY effective_start DESC LIMIT 1
             ) ep ON true
-            ORDER BY s.end_utc DESC
+            WHERE s.start_utc <= $3   -- v3.2: keep only sessions that START in range
+            ORDER BY s.start_utc DESC  -- v3.2: newest start on top
             """,
             allowed, start_utc, end_utc,
         )
@@ -182,6 +200,20 @@ async def export_sessions(
             ORDER BY oe.received_at DESC
             """,
             allowed, start_utc, end_utc,
+        )
+
+        # ── Utility Reads (v3.2) — daily metered vs dispensed per meter ────────
+        # Charger-aware: a meter narrows to one unit (charger_id) or covers a
+        # whole site. Newest interval on top, scoped to the user's allowed EVSEs.
+        utility_rows = await conn.fetch(
+            UTILITY_EFFICIENCY_SQL.replace(
+                "ORDER BY m.site_name, m.account_number, u.interval_start",
+                "ORDER BY m.site_name, m.account_number, u.interval_start DESC",
+            ),
+            False,          # $1 unrestricted — export always scopes by allowed list
+            allowed,        # $2 allowed station ids
+            start_utc,      # $3 (timestamptz cast to ::date)
+            end_utc,        # $4
         )
 
     # ── Build sessions rows ───────────────────────────────────────────────────
@@ -244,8 +276,8 @@ async def export_sessions(
             soc_start_val = round(soc_start_val, 1)
 
         data_rows.append([
-            _fmt_ak(start_dt),
-            _fmt_ak(end_dt),
+            _ak_dt(start_dt),   # A — native datetime cell (v3.2)
+            _ak_dt(end_dt),     # B — native datetime cell (v3.2)
             display_name(sid),
             location_label(sid),
             conn_id,
@@ -274,55 +306,89 @@ async def export_sessions(
     ]
     fault_data: list[list] = []
     for fr in fault_rows:
+        # v3.2: Vendor Error Code (col F) written as a real number when numeric,
+        # so Excel stops flagging "Number stored as Text".
+        vec_raw = fr["vendor_error_code"]
+        vec: int | str = int(vec_raw) if (vec_raw and str(vec_raw).isdigit()) else (vec_raw or "")
         fault_data.append([
-            _fmt_ak(fr["received_at"]),
+            _ak_dt(fr["received_at"]),   # A — native datetime cell (v3.2)
             display_name(fr["asset_id"]),
             location_label(fr["asset_id"]),
             fr["connector_id"] or "",
             fr["error_code"] or "",
-            fr["vendor_error_code"] or "",
+            vec,                          # F — numeric Vendor Error Code (v3.2)
             fr["vendor_description"] or "",
             fr["status"] or "",
         ])
 
+    # ── Build Utility Reads rows (v3.2) ───────────────────────────────────────
+    utility_columns = [
+        "Date",                 # A
+        "Site",                 # B
+        "Unit",                 # C (blank = whole-site meter)
+        "Utility",              # D
+        "Account #",            # E
+        "Metered kWh",          # F
+        "Dispensed kWh",        # G
+        "Efficiency (%)",       # H
+    ]
+    utility_data: list[list] = []
+    for ur in utility_rows:
+        metered   = float(ur["metered_kwh"])   if ur["metered_kwh"]   is not None else 0.0
+        dispensed = float(ur["dispensed_kwh"]) if ur["dispensed_kwh"] is not None else 0.0
+        eff = round(dispensed / metered * 100.0, 1) if metered > 0 else ""
+        utility_data.append([
+            ur["interval_start"].date(),   # A — native date cell
+            ur["site_name"],
+            ur["unit_name"] or "",
+            ur["utility"],
+            ur["account_number"],
+            round(metered, 3),
+            round(dispensed, 3),
+            eff,
+        ])
+
     filename = f"sessions_{start_date}_to_{end_date}"
 
-    # ── XLSX: two sheets ──────────────────────────────────────────────────────
-    if format == "xlsx":
-        import openpyxl
+    # ── XLSX: two sheets (v3.2: CSV option removed) ───────────────────────────
+    import openpyxl
 
-        wb = openpyxl.Workbook()
+    wb = openpyxl.Workbook()
 
-        # Sheet 1 — Sessions
-        ws1 = wb.active
-        ws1.title = "Sessions"
-        ws1.append(session_columns)
-        for row in data_rows:
-            ws1.append(row)
+    # Sheet 1 — Sessions
+    ws1 = wb.active
+    ws1.title = "Sessions"
+    ws1.append(session_columns)
+    for row in data_rows:
+        ws1.append(row)
+    # v3.2: format the two datetime columns (A=Start, B=End) as real dates.
+    for col in ("A", "B"):
+        for cell in ws1[col][1:]:   # skip header row
+            cell.number_format = _XLSX_DT_FORMAT
 
-        # Sheet 2 — Vendor Faults
-        ws2 = wb.create_sheet(title="Vendor Faults")
-        ws2.append(fault_columns)
-        for row in fault_data:
-            ws2.append(row)
+    # Sheet 2 — Vendor Faults
+    ws2 = wb.create_sheet(title="Vendor Faults")
+    ws2.append(fault_columns)
+    for row in fault_data:
+        ws2.append(row)
+    # v3.2: format the timestamp column (A) as a real date.
+    for cell in ws2["A"][1:]:
+        cell.number_format = _XLSX_DT_FORMAT
 
-        buf = io.BytesIO()
-        wb.save(buf)
-        buf.seek(0)
-        return StreamingResponse(
-            buf,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{filename}.xlsx"'},
-        )
+    # Sheet 3 — Utility Reads (v3.2)
+    ws3 = wb.create_sheet(title="Utility Reads")
+    ws3.append(utility_columns)
+    for row in utility_data:
+        ws3.append(row)
+    # Date column (A) as a real date.
+    for cell in ws3["A"][1:]:
+        cell.number_format = "m/dd/yy"
 
-    # ── CSV: sessions only (CSV doesn't support multiple sheets) ──────────────
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(session_columns)
-    writer.writerows(data_rows)
+    buf = io.BytesIO()
+    wb.save(buf)
     buf.seek(0)
     return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.xlsx"'},
     )

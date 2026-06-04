@@ -12,18 +12,20 @@ import { ConnectivityTab } from './pages/ConnectivityTab'
 import { ExportTab }       from './pages/ExportTab'
 import { AlertsTab }       from './pages/AlertsTab'
 import { MaintenanceTab }  from './pages/MaintenanceTab'
+import { UtilityTab }      from './pages/UtilityTab'   // v3.2
 import { AdminTab }        from './pages/AdminTab'
 import { AlertBanner }     from './components/AlertBanner'
 import { LogOut, Zap, Mail } from 'lucide-react'
 
 const ADMIN_EMAIL = 'kris.hall@rechargealaska.net'
 
-type Tab = 'sessions' | 'status' | 'connectivity' | 'export' | 'alerts' | 'maintenance' | 'admin'
+type Tab = 'sessions' | 'status' | 'connectivity' | 'export' | 'alerts' | 'maintenance' | 'utility' | 'admin'
 
 const BASE_TABS: { id: Tab; label: string }[] = [
   { id: 'sessions',     label: 'Charging Sessions' },
   { id: 'status',       label: 'Status History' },
   { id: 'connectivity', label: 'Connectivity' },
+  { id: 'utility',      label: 'Utility Reads' },   // v3.2
   { id: 'export',       label: 'Data Export' },
   { id: 'alerts',       label: 'Alerts' },
   { id: 'maintenance',  label: 'Maintenance' },
@@ -124,6 +126,7 @@ export default function App() {
         {activeTab === 'export'       && <ExportTab initialFilters={sessionFilters ?? undefined} />}
         {activeTab === 'alerts'       && <AlertsTab />}
         {activeTab === 'maintenance'  && <MaintenanceTab userEmail={userEmail} />}
+        {activeTab === 'utility'      && <UtilityTab />}
         {activeTab === 'admin'        && isAdmin && <AdminTab />}
       </main>
 

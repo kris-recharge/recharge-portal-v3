@@ -150,7 +150,10 @@ async def get_sessions(
                 WHERE m.station_id = ANY($1::text[])
                   AND m.transaction_id IS NOT NULL
                   AND ($2::timestamptz IS NULL OR m.ts >= $2)
-                  AND ($3::timestamptz IS NULL OR m.ts <= $3)
+                  -- v3.2: filter by session START time. Widen reading window 1 day
+                  -- past end so sessions that START in range aren't truncated; the
+                  -- outer WHERE drops sessions that start after the window.
+                  AND ($3::timestamptz IS NULL OR m.ts <= $3 + INTERVAL '1 day')
                 GROUP BY m.station_id, m.connector_id, m.transaction_id
             ),
             with_auth AS (
@@ -188,7 +191,8 @@ async def get_sessions(
                    AVG(EXTRACT(EPOCH FROM (end_utc - start_utc)) / 60.0) OVER()
                                                                            AS agg_avg_duration_min
             FROM with_auth
-            ORDER BY end_utc DESC NULLS LAST
+            WHERE ($3::timestamptz IS NULL OR start_utc <= $3)  -- v3.2: START in range
+            ORDER BY start_utc DESC NULLS LAST                  -- v3.2: newest start on top
             LIMIT $4 OFFSET $5
             """,
             allowed,

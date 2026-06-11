@@ -1175,6 +1175,33 @@ VALUES
    'pass_fail', true, false, NULL, false,
    'If SPD indicator shows fault or replacement required, replace SPD before returning charger to service.')
 ON CONFLICT (id) DO NOTHING;
+
+-- ── v3.2: AC input torque checks on annual PMs ────────────────────────────────
+-- Autel Annual: add AC input torque verification (Autel manual §5.5.2)
+INSERT INTO pm_template_tasks
+    (id, template_id, task_code, task_order, task_category,
+     task_name, task_description, input_type, is_required, is_conditional,
+     critical_fail, fail_guidance)
+VALUES
+  ('cccccccc-0003-0000-0000-000000000006',
+   'bbbbbbbb-bbbb-bbbb-bbbb-000000000003',
+   'A-03', 6, 'Electrical',
+   'Torque check — AC input connections',
+   'Verify torque on the AC input power cable terminations and PE wire busbar fasteners: '
+   '15.12 ± 1.84 ft·lb (20.5 ± 2.5 N·m) per Autel MaxiCharger manual §5.5.2. '
+   'LOTO REQUIRED — fully de-energize charger before opening cabinet.',
+   'completed', true, false, false,
+   'LOTO must be in place before opening cabinet. Retorque any loose connections to spec and document them.')
+ON CONFLICT (id) DO NOTHING;
+
+-- Tritium TR-17: embed the explicit torque value (idempotent UPDATE)
+UPDATE pm_template_tasks
+SET task_description =
+      'Inspect and retorque all AC input cable connections — L1/L2/L3 and Earth M8 lugs to 20 Nm '
+      '(Tritium INS.046 Cable Termination; INS.1716 §3.2 #17). Apply a torque mark to stud and nut. '
+      'LOTO REQUIRED — fully de-energize charger before opening cabinet.'
+WHERE id = 'ffffffff-0008-0000-0000-000000000017'
+  AND task_description NOT LIKE '%20 Nm%';
 """
 
 

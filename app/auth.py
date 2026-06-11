@@ -70,8 +70,18 @@ def _decode_jwt_payload(token: str) -> dict:
 
 # ── Supabase REST helpers ─────────────────────────────────────────────────────
 
+class _SupabaseUnreachable(Exception):
+    """Raised when token validation failed for infrastructure reasons
+    (timeout, DNS, 5xx) rather than because the token is invalid."""
+
+
 def _supabase_get_user(access_token: str) -> dict | None:
-    """Call Supabase /auth/v1/user to validate the token and get user info."""
+    """Call Supabase /auth/v1/user to validate the token and get user info.
+
+    Returns None only when Supabase definitively rejects the token (4xx).
+    Raises _SupabaseUnreachable on network errors / 5xx so callers don't
+    treat a transient outage as an expired session.
+    """
     url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/user"
     req = urllib.request.Request(url, method="GET")
     req.add_header("apikey", SUPABASE_SERVICE_ROLE_KEY)
@@ -79,8 +89,12 @@ def _supabase_get_user(access_token: str) -> dict | None:
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8", errors="replace"))
-    except Exception:
-        return None
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500:
+            return None  # token genuinely invalid/expired
+        raise _SupabaseUnreachable(f"Supabase auth returned {e.code}")
+    except Exception as e:
+        raise _SupabaseUnreachable(str(e))
 
 
 def _fetch_allowed_evse(email: str) -> list[str] | None:
@@ -198,7 +212,18 @@ async def get_current_user(
             return user
 
     # Validate with Supabase
-    user_data = _supabase_get_user(access_token)
+    try:
+        user_data = _supabase_get_user(access_token)
+    except _SupabaseUnreachable:
+        # Supabase is down/slow — not the user's fault. Serve a stale cache
+        # entry if we have one; otherwise surface 503 so the frontend does
+        # NOT treat this as an expired session and log the user out.
+        if cached:
+            return cached[0]
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth service temporarily unavailable",
+        )
     if not user_data or not user_data.get("email"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
 

@@ -9,29 +9,42 @@ import { supabase } from './supabase'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  // Get the current session token from Supabase (stored in localStorage)
-  const { data: { session } } = await supabase.auth.getSession()
-
+async function doFetch<T>(path: string, init: RequestInit | undefined, token: string | null): Promise<Response> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init?.headers as Record<string, string> ?? {}),
   }
-  if (session?.access_token) {
-    headers['Authorization'] = `Bearer ${session.access_token}`
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
   }
-
-  const res = await fetch(`${BASE}${path}`, {
+  return fetch(`${BASE}${path}`, {
     credentials: 'include',
     headers,
     ...init,
   })
-  if (!res.ok) {
-    if (res.status === 401) {
-      // Session is invalid — sign out so onAuthStateChange fires and
-      // App.tsx shows the LoginScreen inline (no /login redirect needed)
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // Get the current session token from Supabase (stored in localStorage)
+  const { data: { session } } = await supabase.auth.getSession()
+
+  let res = await doFetch<T>(path, init, session?.access_token ?? null)
+
+  if (res.status === 401) {
+    // The access token may simply be stale (it expires hourly). Try a
+    // refresh and retry once before treating the session as dead — a
+    // transient blip here must not log the user out.
+    const { data: refreshed, error } = await supabase.auth.refreshSession()
+    if (refreshed?.session?.access_token) {
+      res = await doFetch<T>(path, init, refreshed.session.access_token)
+    } else if (error?.message?.match(/refresh.*(token|session)|invalid|revoked|not.?found/i)) {
+      // Refresh token is definitively invalid — sign out so
+      // onAuthStateChange fires and App.tsx shows the LoginScreen.
       await supabase.auth.signOut()
     }
+  }
+
+  if (!res.ok) {
     throw new Error(`API error ${res.status}: ${path}`)
   }
   return res.json() as Promise<T>

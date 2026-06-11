@@ -80,29 +80,44 @@ UTILITY_EFFICIENCY_SQL = """
         FROM meter_stations ms
         JOIN meter_values_parsed mv ON mv.station_id = ms.station_id
         WHERE mv.transaction_id IS NOT NULL
-          AND mv.ts >= $3::date
+          AND mv.ts >= ($3::date - INTERVAL '1 day')
           AND mv.ts <  ($4::date + INTERVAL '2 days')
         GROUP BY ms.account_number, mv.station_id, mv.connector_id, mv.transaction_id
+    ),
+    sess_daily AS (
+        -- Sessions bucketed by Alaska-local day, matching the Sessions tab
+        SELECT account_number,
+               (start_utc AT TIME ZONE 'America/Anchorage')::date AS day,
+               SUM(energy_wh) / 1000.0 AS dispensed_kwh
+        FROM sess
+        GROUP BY 1, 2
+    ),
+    usage_daily AS (
+        -- CEA (cea_scraper, 2026-06-10+) stores hourly rows in true UTC:
+        -- sum them into Alaska-local days. GVEA/CVEA store one daily row
+        -- stamped midnight UTC that already represents that calendar day,
+        -- so their stamp's UTC date is kept as-is.
+        SELECT account_number, utility,
+               CASE WHEN granularity_min < 1440
+                    THEN (interval_start AT TIME ZONE 'America/Anchorage')::date
+                    ELSE (interval_start AT TIME ZONE 'UTC')::date
+               END AS day,
+               SUM(kwh) AS metered_kwh
+        FROM utility_usage
+        WHERE interval_start >= ($3::date - INTERVAL '1 day')
+          AND interval_start <  ($4::date + INTERVAL '2 days')
+        GROUP BY 1, 2, 3
     )
     SELECT m.account_number, m.utility, m.display_name, m.site_name, m.unit_name,
-           u.interval_start, u.interval_end,
-           u.kwh AS metered_kwh,
-           COALESCE(SUM(sess.energy_wh) FILTER (
-               WHERE sess.start_utc >= u.interval_start
-                 AND sess.start_utc <  u.interval_end
-           ), 0) / 1000.0 AS dispensed_kwh
-    FROM utility_usage u
-    JOIN meters m   ON m.account_number = u.account_number
-    LEFT JOIN sess  ON sess.account_number = m.account_number
-    WHERE u.interval_start >= $3::date
-      AND u.interval_start <  ($4::date + INTERVAL '1 day')
-      -- v3.2: CEA (mymeterQ) emits overlapping rolling-24h reads stamped hourly;
-      -- keep only the canonical midnight-UTC daily read. GVEA/CVEA are already
-      -- midnight-stamped daily, so this is a no-op for them.
-      AND (u.interval_start AT TIME ZONE 'UTC')::time = TIME '00:00:00'
-    GROUP BY m.account_number, m.utility, m.display_name, m.site_name, m.unit_name,
-             u.interval_start, u.interval_end, u.kwh
-    ORDER BY m.site_name, m.account_number, u.interval_start
+           u.day,
+           u.metered_kwh,
+           COALESCE(sd.dispensed_kwh, 0) AS dispensed_kwh
+    FROM usage_daily u
+    JOIN meters m        ON m.account_number = u.account_number
+    LEFT JOIN sess_daily sd ON sd.account_number = u.account_number
+                           AND sd.day = u.day
+    WHERE u.day BETWEEN $3::date AND $4::date
+    ORDER BY m.site_name, m.account_number, u.day
 """
 
 
@@ -442,7 +457,7 @@ async def utility_efficiency(
         dispensed = float(r["dispensed_kwh"]) if r["dispensed_kwh"] is not None else 0.0
         eff = round(dispensed / metered * 100.0, 1) if metered > 0 else None
         meters[key]["days"].append({
-            "date":           r["interval_start"].date().isoformat(),
+            "date":           r["day"].isoformat(),
             "metered_kwh":    round(metered, 3),
             "dispensed_kwh":  round(dispensed, 3),
             "efficiency_pct": eff,

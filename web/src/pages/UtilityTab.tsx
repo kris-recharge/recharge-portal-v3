@@ -14,9 +14,8 @@ import {
 import { RefreshCw, AlertCircle, Gauge } from 'lucide-react'
 import { fetchUtilityEfficiency, type UtilityEfficiencyMeter } from '../lib/api'
 
-// v3.2: single bar colour for the Utility Reads charts.
-const BAR_COLOR = '#2563eb'         // blue
-const KWH_BAR_COLOR = '#10b981'     // green — metered-only meters (kWh, no efficiency)
+// Utility Reads charts plot daily total metered kWh (green) for every meter.
+const KWH_BAR_COLOR = '#10b981'     // green — daily metered kWh
 
 function todayAK() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Anchorage' })
@@ -63,13 +62,15 @@ function MeterChart({ meter }: { meter: UtilityEfficiencyMeter }) {
         </div>
         <div className="text-right">
           <div className="text-2xl font-bold text-gray-800 leading-none">
-            {meteredOnly
-              ? `${Math.round(totalKwh).toLocaleString()} kWh`
-              : avg !== null ? `${avg}%` : '—'}
+            {Math.round(totalKwh).toLocaleString()} kWh
           </div>
-          <div className="text-[11px] text-gray-400 mt-0.5">
-            {meteredOnly ? 'total metered' : 'avg efficiency'}
-          </div>
+          <div className="text-[11px] text-gray-400 mt-0.5">total metered</div>
+          {!meteredOnly && (
+            <div className="text-xs font-semibold text-emerald-600 mt-1.5 leading-none">
+              {avg !== null ? `${avg}%` : '—'}
+              <span className="text-[11px] font-normal text-gray-400"> avg efficiency</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -77,24 +78,20 @@ function MeterChart({ meter }: { meter: UtilityEfficiencyMeter }) {
         <BarChart data={data} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
           <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#9ca3af' }} interval="preserveStartEnd" />
-          <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} unit={meteredOnly ? '' : '%'} />
+          <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} />
           <Tooltip
             formatter={(_v, _n, p) => {
               const d = p.payload as typeof data[number]
               return meteredOnly
                 ? [`${d.metered_kwh} kWh metered`, 'Usage']
                 : [
-                    `${d.eff ?? '—'}%  (${d.dispensed_kwh} / ${d.metered_kwh} kWh)`,
-                    'Efficiency',
+                    `${d.metered_kwh} kWh metered  ·  ${d.eff ?? '—'}% eff (${d.dispensed_kwh} kWh dispensed)`,
+                    'Daily read',
                   ]
             }}
             labelFormatter={(l) => `Day ${l}`}
           />
-          <Bar
-            dataKey={meteredOnly ? 'metered_kwh' : 'eff'}
-            radius={[2, 2, 0, 0]}
-            fill={meteredOnly ? KWH_BAR_COLOR : BAR_COLOR}
-          />
+          <Bar dataKey="metered_kwh" radius={[2, 2, 0, 0]} fill={KWH_BAR_COLOR} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -122,7 +119,7 @@ export function UtilityTab() {
             <Gauge size={16} className="text-gray-400" /> Utility Reads — Site Efficiency
           </h2>
           <p className="text-xs text-gray-400 mt-0.5">
-            Daily efficiency = energy dispensed to vehicles ÷ utility-metered energy.
+            Daily utility-metered kWh per site. Avg efficiency = energy dispensed to vehicles ÷ metered energy.
           </p>
         </div>
         <div className="flex items-end gap-2">

@@ -430,7 +430,7 @@ export interface UtilityAccount {
 export interface UtilityEfficiencyDay {
   date: string
   metered_kwh: number
-  dispensed_kwh: number
+  dispensed_kwh: number | null   // null on metered-only meters (no chargers)
   efficiency_pct: number | null
 }
 
@@ -438,8 +438,9 @@ export interface UtilityEfficiencyMeter {
   account_number: string
   utility: string
   display_name: string
-  site_name: string
-  unit_name: string | null   // v3.2: set when meter narrows to a single unit
+  site_name: string | null    // null when the meter has no site mapping
+  unit_name: string | null    // v3.2: set when meter narrows to a single unit
+  metered_only: boolean       // true = no chargers behind this meter (kWh-only chart)
   days: UtilityEfficiencyDay[]
 }
 

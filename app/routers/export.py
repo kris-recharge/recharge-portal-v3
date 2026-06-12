@@ -204,16 +204,22 @@ async def export_sessions(
 
         # ── Utility Reads (v3.2) — daily metered vs dispensed per meter ────────
         # Charger-aware: a meter narrows to one unit (charger_id) or covers a
-        # whole site. Newest interval on top, scoped to the user's allowed EVSEs.
+        # whole site. Newest day on top, scoped to the user's allowed EVSEs.
+        # Unrestricted users exporting without an EVSE filter also get
+        # metered-only meters (no site mapping, e.g. CEA 2630156).
+        unrestricted_export = (
+            (user.allowed_evse_ids is None or "__ALL__" in (user.allowed_evse_ids or []))
+            and not station_id
+        )
         utility_rows = await conn.fetch(
             UTILITY_EFFICIENCY_SQL.replace(
-                "ORDER BY m.site_name, m.account_number, u.interval_start",
-                "ORDER BY m.site_name, m.account_number, u.interval_start DESC",
+                "ORDER BY m.site_name, m.account_number, u.day",
+                "ORDER BY m.site_name, m.account_number, u.day DESC",
             ),
-            False,          # $1 unrestricted — export always scopes by allowed list
-            allowed,        # $2 allowed station ids
-            start_utc,      # $3 (timestamptz cast to ::date)
-            end_utc,        # $4
+            unrestricted_export,  # $1
+            allowed,              # $2 allowed station ids
+            start_utc,            # $3 (timestamptz cast to ::date)
+            end_utc,              # $4
         )
 
     # ── Build sessions rows ───────────────────────────────────────────────────
@@ -334,17 +340,21 @@ async def export_sessions(
     ]
     utility_data: list[list] = []
     for ur in utility_rows:
-        metered   = float(ur["metered_kwh"])   if ur["metered_kwh"]   is not None else 0.0
-        dispensed = float(ur["dispensed_kwh"]) if ur["dispensed_kwh"] is not None else 0.0
-        eff = round(dispensed / metered * 100.0, 1) if metered > 0 else ""
+        metered   = float(ur["metered_kwh"]) if ur["metered_kwh"] is not None else 0.0
+        # Metered-only meters (no site mapping) have no dispensed side: blank cells
+        dispensed = float(ur["dispensed_kwh"]) if ur["dispensed_kwh"] is not None else None
+        eff = (
+            round(dispensed / metered * 100.0, 1)
+            if dispensed is not None and metered > 0 else ""
+        )
         utility_data.append([
-            ur["interval_start"].date(),   # A — native date cell
-            ur["site_name"],
+            ur["day"],                                     # A — native date cell
+            ur["site_name"] or ur["display_name"] or "",   # site-less: display name
             ur["unit_name"] or "",
             ur["utility"],
             ur["account_number"],
             round(metered, 3),
-            round(dispensed, 3),
+            round(dispensed, 3) if dispensed is not None else "",
             eff,
         ])
 

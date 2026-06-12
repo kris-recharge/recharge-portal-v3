@@ -51,18 +51,20 @@ UTILITY_EFFICIENCY_SQL = """
                s.name  AS site_name,
                ch.name AS unit_name
         FROM utility_accounts ua
-        JOIN sites s          ON s.id  = ua.site_id
+        LEFT JOIN sites s     ON s.id  = ua.site_id
         LEFT JOIN chargers ch ON ch.id = ua.charger_id
-        WHERE ua.site_id IS NOT NULL
-          AND ua.enabled = true
+        WHERE ua.enabled = true
           AND (
+                -- Site-less meters (e.g. CEA 2630156, ABB not on the network
+                -- yet) are metered-only and visible to unrestricted users.
+                -- Site-mapped meters follow unit access.
                 $1::boolean
-                OR EXISTS (
+                OR (ua.site_id IS NOT NULL AND EXISTS (
                     SELECT 1 FROM chargers c
                     WHERE c.external_id = ANY($2::text[])
                       AND ( (ua.charger_id IS NOT NULL AND c.id = ua.charger_id)
                             OR (ua.charger_id IS NULL AND c.site_id = ua.site_id) )
-                )
+                ))
           )
     ),
     meter_stations AS (
@@ -109,9 +111,12 @@ UTILITY_EFFICIENCY_SQL = """
         GROUP BY 1, 2, 3
     )
     SELECT m.account_number, m.utility, m.display_name, m.site_name, m.unit_name,
+           (m.site_id IS NULL) AS metered_only,
            u.day,
            u.metered_kwh,
-           COALESCE(sd.dispensed_kwh, 0) AS dispensed_kwh
+           -- Site-less meters have no chargers: no dispensed side at all
+           CASE WHEN m.site_id IS NULL THEN NULL
+                ELSE COALESCE(sd.dispensed_kwh, 0) END AS dispensed_kwh
     FROM usage_daily u
     JOIN meters m        ON m.account_number = u.account_number
     LEFT JOIN sess_daily sd ON sd.account_number = u.account_number
@@ -451,15 +456,20 @@ async def utility_efficiency(
                 "display_name":   r["display_name"],
                 "site_name":      r["site_name"],
                 "unit_name":      r["unit_name"],
+                "metered_only":   bool(r["metered_only"]),
                 "days":           [],
             }
-        metered   = float(r["metered_kwh"])   if r["metered_kwh"]   is not None else 0.0
-        dispensed = float(r["dispensed_kwh"]) if r["dispensed_kwh"] is not None else 0.0
-        eff = round(dispensed / metered * 100.0, 1) if metered > 0 else None
+        metered   = float(r["metered_kwh"]) if r["metered_kwh"] is not None else 0.0
+        # Site-less (metered-only) meters have no dispensed side: keep it None
+        dispensed = float(r["dispensed_kwh"]) if r["dispensed_kwh"] is not None else None
+        eff = (
+            round(dispensed / metered * 100.0, 1)
+            if dispensed is not None and metered > 0 else None
+        )
         meters[key]["days"].append({
             "date":           r["day"].isoformat(),
             "metered_kwh":    round(metered, 3),
-            "dispensed_kwh":  round(dispensed, 3),
+            "dispensed_kwh":  round(dispensed, 3) if dispensed is not None else None,
             "efficiency_pct": eff,
         })
 

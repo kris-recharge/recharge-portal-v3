@@ -17,9 +17,10 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from ..auth import CurrentUser, filter_evse_ids
+from ..config import DEV_BYPASS_AUTH
 from ..constants import connector_type_for, display_name, get_all_station_ids, location_label
 from ..db import acquire
-from .utility import UTILITY_EFFICIENCY_SQL  # v3.2: shared metered-vs-dispensed query
+from .utility import ADMIN_EMAIL, UTILITY_EFFICIENCY_SQL  # v3.2: shared metered-vs-dispensed query
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -206,9 +207,14 @@ async def export_sessions(
         # Charger-aware: a meter narrows to one unit (charger_id) or covers a
         # whole site. Newest day on top, scoped to the user's allowed EVSEs.
         # Unrestricted users exporting without an EVSE filter also get
-        # metered-only meters (no site mapping, e.g. CEA 2630156).
+        # metered-only meters (no site mapping, e.g. CEA 2630156). Mirror the
+        # /efficiency endpoint: admin email and DEV_BYPASS count as unrestricted
+        # even when the user has an explicit allowed_evse_ids list.
+        is_admin = user.email == ADMIN_EMAIL or DEV_BYPASS_AUTH
         unrestricted_export = (
-            (user.allowed_evse_ids is None or "__ALL__" in (user.allowed_evse_ids or []))
+            (is_admin
+             or user.allowed_evse_ids is None
+             or "__ALL__" in (user.allowed_evse_ids or []))
             and not station_id
         )
         utility_rows = await conn.fetch(

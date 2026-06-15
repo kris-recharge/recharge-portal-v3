@@ -249,8 +249,8 @@ function UsersSection() {
   const { data: users = [], isLoading } = useQuery({ queryKey: ['admin-users'], queryFn: fetchAdminUsers })
 
   const [form, setForm] = useState<{
-    id: string; email: string; name: string; allowed_evse_ids: string[]; active: boolean; mode: 'create' | 'update'
-  }>({ id: '', email: '', name: '', allowed_evse_ids: [], active: true, mode: 'create' })
+    id: string; email: string; name: string; allowed_evse_ids: string[]; active: boolean; can_submit_pm: boolean; mode: 'create' | 'update'
+  }>({ id: '', email: '', name: '', allowed_evse_ids: [], active: true, can_submit_pm: false, mode: 'create' })
 
   const [status, setStatus] = useState({ ok: true, msg: '' })
 
@@ -258,9 +258,9 @@ function UsersSection() {
     mutationFn: async () => {
       const evses = form.allowed_evse_ids.length > 0 ? form.allowed_evse_ids : null
       if (form.mode === 'create') {
-        return createAdminUser({ email: form.email, name: form.name, allowed_evse_ids: evses, active: form.active })
+        return createAdminUser({ email: form.email, name: form.name, allowed_evse_ids: evses, active: form.active, can_submit_pm: form.can_submit_pm })
       } else {
-        return updateAdminUser(form.id, { email: form.email, name: form.name, allowed_evse_ids: evses, active: form.active })
+        return updateAdminUser(form.id, { email: form.email, name: form.name, allowed_evse_ids: evses, active: form.active, can_submit_pm: form.can_submit_pm })
       }
     },
     onSuccess: () => {
@@ -278,14 +278,14 @@ function UsersSection() {
   })
 
   function resetForm() {
-    setForm({ id: '', email: '', name: '', allowed_evse_ids: [], active: true, mode: 'create' })
+    setForm({ id: '', email: '', name: '', allowed_evse_ids: [], active: true, can_submit_pm: false, mode: 'create' })
   }
 
   function editUser(u: AdminUser) {
     setForm({
       id: u.id, email: u.email, name: u.name ?? '',
       allowed_evse_ids: u.allowed_evse_ids ?? [],
-      active: u.active, mode: 'update',
+      active: u.active, can_submit_pm: u.can_submit_pm, mode: 'update',
     })
     setStatus({ ok: true, msg: '' })
   }
@@ -308,7 +308,7 @@ function UsersSection() {
         <table className="w-full text-xs border border-gray-200 rounded-lg overflow-hidden">
           <thead className="bg-gray-50">
             <tr>
-              {['Email', 'Name', 'Active', 'Allowed EVSEs', ''].map(h => (
+              {['Email', 'Name', 'Active', 'PMs', 'Allowed EVSEs', ''].map(h => (
                 <th key={h} className="px-3 py-2 text-left font-medium text-gray-500">{h}</th>
               ))}
             </tr>
@@ -322,6 +322,11 @@ function UsersSection() {
                   <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${u.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                     {u.active ? 'Active' : 'Inactive'}
                   </span>
+                </td>
+                <td className="px-3 py-2">
+                  {u.can_submit_pm
+                    ? <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">Yes</span>
+                    : <span className="text-gray-300">—</span>}
                 </td>
                 <td className="px-3 py-2 text-gray-500 max-w-xs truncate">
                   {u.allowed_evse_ids == null ? 'All' : u.allowed_evse_ids.length === 0 ? 'None' : u.allowed_evse_ids.length + ' EVSEs'}
@@ -378,6 +383,11 @@ function UsersSection() {
         <label className="flex items-center gap-2 text-sm text-gray-600">
           <input type="checkbox" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} />
           Active
+        </label>
+
+        <label className="flex items-center gap-2 text-sm text-gray-600">
+          <input type="checkbox" checked={form.can_submit_pm} onChange={e => setForm(f => ({ ...f, can_submit_pm: e.target.checked }))} />
+          Can perform PMs / log repairs (on their allowed units)
         </label>
 
         <div className="flex items-center gap-3">

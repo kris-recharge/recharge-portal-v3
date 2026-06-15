@@ -6,6 +6,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from './lib/supabase'
+import { fetchMe, type Me } from './lib/api'
 import { SessionsTab }     from './pages/SessionsTab'
 import { StatusTab }       from './pages/StatusTab'
 import { ConnectivityTab } from './pages/ConnectivityTab'
@@ -16,8 +17,6 @@ import { UtilityTab }      from './pages/UtilityTab'   // v3.2
 import { AdminTab }        from './pages/AdminTab'
 import { AlertBanner }     from './components/AlertBanner'
 import { LogOut, Zap, Mail } from 'lucide-react'
-
-const ADMIN_EMAIL = 'kris.hall@rechargealaska.net'
 
 type Tab = 'sessions' | 'status' | 'connectivity' | 'export' | 'alerts' | 'maintenance' | 'utility' | 'admin'
 
@@ -42,6 +41,7 @@ interface SharedFilters {
 export default function App() {
   const [activeTab,      setActiveTab]      = useState<Tab>('sessions')
   const [userEmail,      setUserEmail]      = useState<string | null>(null)
+  const [me,             setMe]             = useState<Me | null>(null)
   const [loading,        setLoading]        = useState(true)
   const [sessionFilters, setSessionFilters] = useState<SharedFilters | null>(null)
 
@@ -58,6 +58,16 @@ export default function App() {
     return () => listener.subscription.unsubscribe()
   }, [])
 
+  // Load capabilities (is_admin / can_submit_pm) from the backend once signed in.
+  useEffect(() => {
+    if (!userEmail) { setMe(null); return }
+    let cancelled = false
+    fetchMe()
+      .then(m => { if (!cancelled) setMe(m) })
+      .catch(() => { if (!cancelled) setMe(null) })
+    return () => { cancelled = true }
+  }, [userEmail])
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -70,7 +80,9 @@ export default function App() {
     return <LoginScreen />
   }
 
-  const isAdmin = userEmail === ADMIN_EMAIL
+  const isAdmin = me?.is_admin ?? false
+  const canSubmitPm = me?.can_submit_pm ?? false
+  const technicianName = (me?.name?.trim() || userEmail.split('@')[0]) ?? 'Technician'
   const visibleTabs = isAdmin ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS
 
   return (
@@ -125,7 +137,13 @@ export default function App() {
         {activeTab === 'connectivity' && <ConnectivityTab />}
         {activeTab === 'export'       && <ExportTab initialFilters={sessionFilters ?? undefined} />}
         {activeTab === 'alerts'       && <AlertsTab />}
-        {activeTab === 'maintenance'  && <MaintenanceTab userEmail={userEmail} />}
+        {activeTab === 'maintenance'  && (
+          <MaintenanceTab
+            isAdmin={isAdmin}
+            canSubmitPm={canSubmitPm}
+            technicianName={technicianName}
+          />
+        )}
         {activeTab === 'utility'      && <UtilityTab />}
         {activeTab === 'admin'        && isAdmin && <AdminTab />}
       </main>

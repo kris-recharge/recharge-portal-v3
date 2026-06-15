@@ -39,6 +39,8 @@ class PortalUser:
     email: str
     user_id: str
     allowed_evse_ids: list[str] | None  # None = no restriction
+    name: str = ""
+    can_submit_pm: bool = False  # may log PMs/repairs on their own units
 
 
 # ── Token cache (avoids a Supabase round-trip on every API call) ──────────────
@@ -97,26 +99,26 @@ def _supabase_get_user(access_token: str) -> dict | None:
         raise _SupabaseUnreachable(str(e))
 
 
-def _fetch_allowed_evse(email: str) -> list[str] | None:
-    """Look up portal_users.allowed_evse_ids for this email.
+def _fetch_portal_user(email: str) -> dict:
+    """Look up the portal_users row for this email.
 
     Uses ilike (case-insensitive) so mixed-case email in portal_users still
     matches the lowercase email returned by Supabase auth (e.g. Mark vs mark).
 
-    Returns:
-      None  → row exists with NULL allowed_evse_ids (no restriction / admin)
-      [...] → explicit allowlist for this user
-      []    → authenticated but no matching portal_users row → DENY all
+    Returns a dict: {"allowed_evse_ids", "can_submit_pm", "name"} where
+      allowed_evse_ids: None → NULL row value (no restriction / admin)
+                        [...] → explicit allowlist
+                        []    → authenticated but no matching row → DENY all
 
     Raises _SupabaseUnreachable on network / 5xx errors. This is deliberate:
-    the lookup must FAIL CLOSED. Previously any exception returned None
-    ("no restriction"), which meant a transient lookup failure silently granted
-    a restricted user access to every EVSE. Callers serve a stale cache entry or
-    return 503 instead of granting unrestricted access.
+    the lookup must FAIL CLOSED. A transient lookup failure must never silently
+    grant a restricted user access to every EVSE. Callers serve a stale cache
+    entry or return 503 instead of granting unrestricted access.
     """
     url = (
         f"{SUPABASE_URL.rstrip('/')}/rest/v1/portal_users"
-        f"?select=allowed_evse_ids&email=ilike.{urllib.parse.quote(email.lower())}&limit=1"
+        f"?select=allowed_evse_ids,can_submit_pm,name"
+        f"&email=ilike.{urllib.parse.quote(email.lower())}&limit=1"
     )
     req = urllib.request.Request(url, method="GET")
     req.add_header("apikey", SUPABASE_SERVICE_ROLE_KEY)
@@ -128,19 +130,27 @@ def _fetch_allowed_evse(email: str) -> list[str] | None:
     except urllib.error.HTTPError as e:
         if 400 <= e.code < 500:
             # PostgREST rejected the request — treat as "no provisioning" → deny.
-            return []
+            return {"allowed_evse_ids": [], "can_submit_pm": False, "name": ""}
         raise _SupabaseUnreachable(f"portal_users lookup returned {e.code}")
     except Exception as e:
         raise _SupabaseUnreachable(str(e))
 
     if not data:
-        return []
-    val = data[0].get("allowed_evse_ids")
+        return {"allowed_evse_ids": [], "can_submit_pm": False, "name": ""}
+
+    row = data[0]
+    val = row.get("allowed_evse_ids")
     if val is None:
-        return None  # NULL = no restriction
-    if isinstance(val, list):
-        return [str(v) for v in val if v]
-    return []
+        allowed: list[str] | None = None  # NULL = no restriction
+    elif isinstance(val, list):
+        allowed = [str(v) for v in val if v]
+    else:
+        allowed = []
+    return {
+        "allowed_evse_ids": allowed,
+        "can_submit_pm": bool(row.get("can_submit_pm")),
+        "name": row.get("name") or "",
+    }
 
 
 # ── Cookie extraction ─────────────────────────────────────────────────────────
@@ -196,7 +206,13 @@ async def get_current_user(
 
     # DEV: bypass auth entirely for local review
     if DEV_BYPASS_AUTH:
-        return PortalUser(email="kris.hall@rechargealaska.net", user_id="37553d35-318b-4587-ac86-2ee346b9c4ca", allowed_evse_ids=None)
+        return PortalUser(
+            email="kris.hall@rechargealaska.net",
+            user_id="37553d35-318b-4587-ac86-2ee346b9c4ca",
+            allowed_evse_ids=None,
+            name="Kris Hall",
+            can_submit_pm=True,
+        )
 
     access_token: str | None = None
 
@@ -247,7 +263,7 @@ async def get_current_user(
     email   = user_data["email"]
     user_id = user_data.get("id", "")
     try:
-        allowed = _fetch_allowed_evse(email)
+        perms = _fetch_portal_user(email)
     except _SupabaseUnreachable:
         # Allowlist lookup failed for infrastructure reasons. Do NOT fail open —
         # serve the last known-good cached user if we have one, otherwise 503 so
@@ -259,7 +275,13 @@ async def get_current_user(
             detail="Authorization service temporarily unavailable",
         )
 
-    portal_user = PortalUser(email=email, user_id=user_id, allowed_evse_ids=allowed)
+    portal_user = PortalUser(
+        email=email,
+        user_id=user_id,
+        allowed_evse_ids=perms["allowed_evse_ids"],
+        name=perms["name"],
+        can_submit_pm=perms["can_submit_pm"],
+    )
     _cache[ck] = (portal_user, time.monotonic() + _CACHE_TTL)
     return portal_user
 

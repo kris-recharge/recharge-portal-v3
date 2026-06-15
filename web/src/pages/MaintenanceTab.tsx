@@ -25,9 +25,6 @@ import {
   type TaskResult, type PartReplaced, type Site,
 } from '../lib/api'
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const ADMIN_EMAIL = 'kris.hall@rechargealaska.net'
 
 const PM_TYPE_LABELS: Record<string, string> = {
   pm_quarterly:   'Quarterly PM',
@@ -291,15 +288,14 @@ function FleetPMHealth({ units }: { units: MaintenanceUnit[] }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 interface FleetOverviewProps {
-  userEmail: string
+  isAdmin: boolean
   onSelectUnit: (id: string) => void
 }
 
-function FleetOverview({ userEmail, onSelectUnit }: FleetOverviewProps) {
+function FleetOverview({ isAdmin, onSelectUnit }: FleetOverviewProps) {
   const [search, setSearch]           = useState('')
   const [siteFilter, setSiteFilter]   = useState('')
   const [showRetired, setShowRetired] = useState(false)
-  const isAdmin = userEmail === ADMIN_EMAIL
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['maintenance-overview', showRetired],
@@ -1241,12 +1237,15 @@ type ModalType = 'pm_quarterly' | 'pm_semi_annual' | 'pm_annual' | 'log_repair' 
 
 interface UnitDetailProps {
   chargerId: string
-  userEmail: string
+  isAdmin: boolean
+  canSubmitPm: boolean
+  technicianName: string
   onBack: () => void
 }
 
-function UnitDetail({ chargerId, userEmail, onBack }: UnitDetailProps) {
-  const isAdmin = userEmail === ADMIN_EMAIL
+function UnitDetail({ chargerId, isAdmin, canSubmitPm, technicianName, onBack }: UnitDetailProps) {
+  // Admins implicitly may submit; otherwise rely on the granted capability.
+  const canDoPm = isAdmin || canSubmitPm
   const queryClient = useQueryClient()
 
   const [modal, setModal]               = useState<ModalType>(null)
@@ -1286,7 +1285,7 @@ function UnitDetail({ chargerId, userEmail, onBack }: UnitDetailProps) {
 
   const { charger: c, maintenance_records: records, location_history } = data
 
-  const techName = userEmail.split('@')[0] ?? 'Technician'
+  const techName = technicianName
   const isRetired = c.status === 'retired'
 
   // Determine if PM template exists (used to decide if annual/SA/Q buttons are available)
@@ -1372,8 +1371,9 @@ function UnitDetail({ chargerId, userEmail, onBack }: UnitDetailProps) {
         </div>
       </div>
 
-      {/* Action buttons (admin only, active units) */}
-      {isAdmin && !isRetired && (
+      {/* Action buttons (active units). PM / Log Repair: admin OR can_submit_pm.
+          Fleet ops (Move / Parts / Retire): admin only. */}
+      {canDoPm && !isRetired && (
         <div className="flex flex-wrap gap-2">
           {(c.interval_quarterly_months) && (
             <ActionBtn
@@ -1395,13 +1395,17 @@ function UnitDetail({ chargerId, userEmail, onBack }: UnitDetailProps) {
             onClick={() => setModal('pm_annual')}
           />
           <ActionBtn label="Log Repair / Other" color="gray" onClick={() => setModal('log_repair')} />
-          <ActionBtn label="Move Unit" color="gray" onClick={() => setModal('move_unit')} />
-          <ActionBtn
-            label={c.parts_on_order ? 'Clear Parts on Order' : 'Mark Parts on Order'}
-            color={c.parts_on_order ? 'amber' : 'gray'}
-            onClick={() => patchMutation.mutate(!c.parts_on_order)}
-          />
-          <ActionBtn label="Retire Unit" color="red" onClick={() => setModal('retire_unit')} />
+          {isAdmin && (
+            <>
+              <ActionBtn label="Move Unit" color="gray" onClick={() => setModal('move_unit')} />
+              <ActionBtn
+                label={c.parts_on_order ? 'Clear Parts on Order' : 'Mark Parts on Order'}
+                color={c.parts_on_order ? 'amber' : 'gray'}
+                onClick={() => patchMutation.mutate(!c.parts_on_order)}
+              />
+              <ActionBtn label="Retire Unit" color="red" onClick={() => setModal('retire_unit')} />
+            </>
+          )}
         </div>
       )}
 
@@ -1581,10 +1585,12 @@ function RecordRow({ record: r, chargerId, isAdmin, expanded, onToggle }: {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 interface MaintenanceTabProps {
-  userEmail: string
+  isAdmin: boolean
+  canSubmitPm: boolean
+  technicianName: string
 }
 
-export function MaintenanceTab({ userEmail }: MaintenanceTabProps) {
+export function MaintenanceTab({ isAdmin, canSubmitPm, technicianName }: MaintenanceTabProps) {
   const [selectedChargerId, setSelectedChargerId] = useState<string | null>(null)
 
   return (
@@ -1592,12 +1598,14 @@ export function MaintenanceTab({ userEmail }: MaintenanceTabProps) {
       {selectedChargerId ? (
         <UnitDetail
           chargerId={selectedChargerId}
-          userEmail={userEmail}
+          isAdmin={isAdmin}
+          canSubmitPm={canSubmitPm}
+          technicianName={technicianName}
           onBack={() => setSelectedChargerId(null)}
         />
       ) : (
         <FleetOverview
-          userEmail={userEmail}
+          isAdmin={isAdmin}
           onSelectUnit={setSelectedChargerId}
         />
       )}

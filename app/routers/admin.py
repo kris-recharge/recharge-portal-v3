@@ -67,6 +67,7 @@ class UserCreate(BaseModel):
     name: str = ""
     allowed_evse_ids: list[str] | None = None
     active: bool = True
+    can_submit_pm: bool = False
 
 
 class UserPatch(BaseModel):
@@ -74,6 +75,7 @@ class UserPatch(BaseModel):
     name: str | None = None
     allowed_evse_ids: list[str] | None = None
     active: bool | None = None
+    can_submit_pm: bool | None = None
 
 
 class PricingCreate(BaseModel):
@@ -109,7 +111,7 @@ class EvseUpsert(BaseModel):
 async def list_users(_: AdminUser):
     async with acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id::text, email, name, allowed_evse_ids, active, created_at "
+            "SELECT id::text, email, name, allowed_evse_ids, active, can_submit_pm, created_at "
             "FROM portal_users ORDER BY email"
         )
     return [dict(r) for r in rows]
@@ -120,11 +122,11 @@ async def create_user(body: UserCreate, _: AdminUser):
     async with acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO portal_users (email, name, allowed_evse_ids, active)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id::text, email, name, allowed_evse_ids, active
+            INSERT INTO portal_users (email, name, allowed_evse_ids, active, can_submit_pm)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id::text, email, name, allowed_evse_ids, active, can_submit_pm
             """,
-            body.email, body.name or None, body.allowed_evse_ids, body.active,
+            body.email, body.name or None, body.allowed_evse_ids, body.active, body.can_submit_pm,
         )
     return dict(row)
 
@@ -136,6 +138,7 @@ async def update_user(user_id: str, body: UserPatch, _: AdminUser):
     if body.name             is not None: fields["name"]             = body.name
     if body.active           is not None: fields["active"]           = body.active
     if body.allowed_evse_ids is not None: fields["allowed_evse_ids"] = body.allowed_evse_ids
+    if body.can_submit_pm    is not None: fields["can_submit_pm"]    = body.can_submit_pm
 
     if not fields:
         raise HTTPException(400, "No fields to update")
@@ -146,7 +149,7 @@ async def update_user(user_id: str, body: UserPatch, _: AdminUser):
     async with acquire() as conn:
         row = await conn.fetchrow(
             f"UPDATE portal_users SET {set_clause} WHERE id = $1::uuid "
-            f"RETURNING id::text, email, name, allowed_evse_ids, active",
+            f"RETURNING id::text, email, name, allowed_evse_ids, active, can_submit_pm",
             *values,
         )
     if not row:

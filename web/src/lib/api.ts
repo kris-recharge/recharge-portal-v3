@@ -286,6 +286,18 @@ export function fetchAlertHistory(): Promise<AlertHistoryResponse> {
   return apiFetch<AlertHistoryResponse>('/api/alerts/history')
 }
 
+// ── Current user (capabilities) ─────────────────────────────────────────────────
+
+export interface Me {
+  email: string
+  name: string
+  is_admin: boolean
+  can_submit_pm: boolean
+  allowed_evse_ids: string[] | null
+}
+
+export const fetchMe = (): Promise<Me> => apiFetch<Me>('/api/me')
+
 // ── Admin ──────────────────────────────────────────────────────────────────────
 
 export interface AdminUser {
@@ -294,6 +306,7 @@ export interface AdminUser {
   name: string | null
   allowed_evse_ids: string[] | null
   active: boolean
+  can_submit_pm: boolean
   created_at: string
 }
 
@@ -326,13 +339,13 @@ export const fetchAdminUsers = (): Promise<AdminUser[]> =>
   apiFetch<AdminUser[]>('/api/admin/users')
 
 export const createAdminUser = (body: {
-  email: string; name?: string; allowed_evse_ids?: string[] | null; active?: boolean
+  email: string; name?: string; allowed_evse_ids?: string[] | null; active?: boolean; can_submit_pm?: boolean
 }): Promise<AdminUser> =>
   apiFetch<AdminUser>('/api/admin/users', { method: 'POST', body: JSON.stringify(body) })
 
 export const updateAdminUser = (
   id: string,
-  body: Partial<{ email: string; name: string; allowed_evse_ids: string[] | null; active: boolean }>,
+  body: Partial<{ email: string; name: string; allowed_evse_ids: string[] | null; active: boolean; can_submit_pm: boolean }>,
 ): Promise<AdminUser> =>
   apiFetch<AdminUser>(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
 

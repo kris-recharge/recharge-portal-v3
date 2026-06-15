@@ -16,6 +16,7 @@ from .routers import (
 )
 from .routers import utility
 from .routers import maintenance
+from .routers import me
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +46,12 @@ CREATE TABLE IF NOT EXISTS fired_alerts (
 
 CREATE INDEX IF NOT EXISTS idx_fired_alerts_fired_at ON fired_alerts (fired_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fired_alerts_asset_id  ON fired_alerts (asset_id);
+
+-- ── Portal user capabilities ─────────────────────────────────────────────────
+-- can_submit_pm: grants a non-admin user the right to log PMs / repairs on the
+-- units in their allowed_evse_ids. Defaults false so it must be granted
+-- explicitly from the Admin center.
+ALTER TABLE portal_users ADD COLUMN IF NOT EXISTS can_submit_pm BOOLEAN NOT NULL DEFAULT false;
 
 -- ── Utility data collection tables ───────────────────────────────────────────
 
@@ -1249,6 +1256,7 @@ app.include_router(alerts_sse.router)
 app.include_router(alerts_config.router)
 app.include_router(utility.router)
 app.include_router(maintenance.router)
+app.include_router(me.router)
 
 
 @app.get("/api/health")

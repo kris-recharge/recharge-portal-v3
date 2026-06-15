@@ -43,6 +43,35 @@ async def _require_admin(user: CurrentUser) -> PortalUser:
 AdminUser = Annotated[PortalUser, Depends(_require_admin)]
 
 
+# ── PM submitter guard ────────────────────────────────────────────────────────
+# Allows the super-admin OR any user granted can_submit_pm. Used by the record
+# write endpoints; the endpoints themselves further restrict a non-admin to
+# units inside their allowed_evse_ids (see _check_unit_access).
+
+async def _require_pm_submitter(user: CurrentUser) -> PortalUser:
+    if DEV_BYPASS_AUTH or user.email == ADMIN_EMAIL or user.can_submit_pm:
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to submit maintenance records",
+    )
+
+PmSubmitter = Annotated[PortalUser, Depends(_require_pm_submitter)]
+
+
+def _check_unit_access(user: PortalUser, external_id: str | None) -> None:
+    """Raise 403 if a non-admin user may not act on this unit.
+
+    external_id is the charger's LynkWell asset id; None means a non-LynkWell
+    unit that only the admin can see. Admins (allowed=None) bypass the check.
+    """
+    allowed = _allowed_external_ids(user)
+    if allowed is None:
+        return  # admin / unrestricted
+    if external_id is None or external_id not in allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied for this unit")
+
+
 # ── Warranty status helper ────────────────────────────────────────────────────
 
 def _warranty_status(warranty_end: date | None, owner_name: str | None) -> dict:
@@ -509,11 +538,14 @@ async def get_pm_template(charger_id: str, pm_type: str, user: CurrentUser):
     async with acquire() as conn:
         # Get unit type for this charger
         charger = await conn.fetchrow(
-            "SELECT unit_type_id FROM chargers WHERE id = $1::uuid",
+            "SELECT external_id, unit_type_id FROM chargers WHERE id = $1::uuid",
             charger_id,
         )
         if not charger:
             raise HTTPException(404, "Unit not found")
+
+        # Non-admins may only read templates for units they're allowed to see.
+        _check_unit_access(user, charger["external_id"])
 
         unit_type_id = charger["unit_type_id"]
 
@@ -610,18 +642,21 @@ class SubmitRecordBody(BaseModel):
 
 
 @router.post("/api/maintenance/records", status_code=201)
-async def submit_record(body: SubmitRecordBody, user: AdminUser):
+async def submit_record(body: SubmitRecordBody, user: PmSubmitter):
     if body.additional_work_needed and not body.planned_future_work:
         raise HTTPException(400, "planned_future_work is required when additional_work_needed is true")
 
     async with acquire() as conn:
         # Verify charger exists and get site_id
         charger = await conn.fetchrow(
-            "SELECT id, site_id, unit_type_id FROM chargers WHERE id = $1::uuid",
+            "SELECT id, external_id, site_id, unit_type_id FROM chargers WHERE id = $1::uuid",
             body.charger_id,
         )
         if not charger:
             raise HTTPException(404, "Unit not found")
+
+        # A non-admin submitter may only log records on units they're allowed to see.
+        _check_unit_access(user, charger["external_id"])
 
         # Derive hyperdoc_required from unit type
         hyperdoc_req = False

@@ -43,10 +43,19 @@ SMTP_PASSWORD=<M365 app password>
 ALERT_EMAIL_TO=info@rechargealaska.net
 ALERT_EMAIL_FROM=info@rechargealaska.net
 APP_MODE=web
+APP_ENV=production
 SECRET_KEY=<run: openssl rand -hex 32>
 ALLOWED_ORIGINS=https://www.rechargealaska.net
-# DEV_BYPASS_AUTH must NOT be set (defaults false = real auth enabled)
+# DEV_BYPASS_AUTH must NOT be set (defaults false = real auth enabled).
+# As defense in depth, the bypass is ALSO ignored unless APP_ENV=development,
+# so keep APP_ENV=production here. The image no longer bakes in a .env
+# (Dockerfile.app), so this runtime .env is the single source of config.
 ```
+
+> **Why this matters:** if `DEV_BYPASS_AUTH=true` ever reaches the API in
+> production, Supabase auth is disabled and every user is treated as admin with
+> access to all EVSEs — per-user `portal_users.allowed_evse_ids` filtering stops
+> working entirely. `APP_ENV=production` is the guardrail that prevents this.
 
 ---
 

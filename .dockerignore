@@ -1,0 +1,23 @@
+# Never ship local secrets / config into an image build context.
+# DEV_BYPASS_AUTH lives in .env — baking it into the image previously disabled
+# auth in production. Config is provided at runtime via docker-compose env_file.
+.env
+.env.*
+!.env.example
+web/.env
+web/.env.local
+
+# Python / virtualenv cruft
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Node
+web/node_modules/
+node_modules/
+
+# VCS / editor / docs
+.git/
+.gitignore
+*.md

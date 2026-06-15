@@ -8,7 +8,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app source
 COPY app/ ./app/
-COPY .env .env
+
+# NOTE: do NOT COPY .env into the image. Configuration (including DEV_BYPASS_AUTH
+# and APP_ENV) is supplied at runtime via docker-compose `env_file`. Baking a
+# developer .env into the image previously shipped DEV_BYPASS_AUTH=true to
+# production, which disabled Supabase auth and per-user EVSE filtering for every
+# user. A .dockerignore also excludes .env from the build context as a backstop.
 
 EXPOSE 8000
 

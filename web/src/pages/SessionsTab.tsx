@@ -13,7 +13,7 @@ import { SkeletonKPIRow, SkeletonTable } from '../components/Skeleton'
 import { SessionDetailModal } from '../components/SessionDetailModal'
 import { DailyTotalsCharts } from '../components/DailyTotalsCharts'
 import { SessionDensityHeatmap } from '../components/SessionDensityHeatmap'
-import { Zap, Clock, DollarSign, Activity, Filter, X, Radio, Gauge } from 'lucide-react'
+import { Zap, Clock, DollarSign, Activity, Filter, X, Radio, Gauge, TrendingUp } from 'lucide-react'
 
 const PAGE_SIZE = 100
 const LIVE_HOURS = 168          // rolling window length
@@ -27,6 +27,14 @@ function toAKDateStr(d: Date): string {
   return d.toLocaleDateString('en-CA', { timeZone: AK_TZ })
 }
 function defaultEndDate()   { return toAKDateStr(new Date()) }
+
+/** "2026-03-14" → "Mar 14, 2026" (no timezone shift — parses parts directly). */
+function formatDateLong(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number)
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+  })
+}
 function defaultStartDate() {
   const d = new Date()
   d.setDate(d.getDate() - 7)
@@ -429,6 +437,40 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
           />
         </div>
       )}
+
+      {/* ── Year-to-date peak strip ───────────────────────────────────────── */}
+      {/* Distinct from the filtered KPI row above: EVSE-scoped but NOT affected
+          by the date-range filter. Resets every 1-Jan. */}
+      <div className="bg-gradient-to-r from-emerald-50 to-white rounded-xl border border-emerald-100 shadow-sm px-5 py-4 flex items-center gap-4">
+        <span className="p-2.5 rounded-lg bg-emerald-100 text-emerald-700 shrink-0">
+          <TrendingUp size={18} />
+        </span>
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span className="text-sm font-medium text-gray-500">
+            Max Dispensed Energy
+            <span className="ml-2 text-xs font-semibold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
+              YTD {toAKDateStr(new Date()).slice(0, 4)}
+            </span>
+          </span>
+          {analyticsLoading ? (
+            <span className="text-2xl font-bold text-gray-300 tabular-nums">—</span>
+          ) : analytics?.max_daily_energy_kwh != null ? (
+            <>
+              <span className="text-2xl font-bold text-gray-900 tabular-nums">
+                {analytics.max_daily_energy_kwh.toFixed(1)} kWh
+              </span>
+              <span className="text-sm text-gray-500">
+                on {analytics.max_daily_energy_date ? formatDateLong(analytics.max_daily_energy_date) : '—'}
+              </span>
+            </>
+          ) : (
+            <span className="text-2xl font-bold text-gray-300 tabular-nums">—</span>
+          )}
+        </div>
+        <span className="ml-auto text-xs text-gray-400 hidden sm:block">
+          {applied.stationIds.length ? `${applied.stationIds.length} EVSE` : 'All EVSEs'} · single best 24 h · not date-filtered
+        </span>
+      </div>
 
       {/* ── Daily bar charts ──────────────────────────────────────────────── */}
       <DailyTotalsCharts

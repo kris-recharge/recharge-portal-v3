@@ -128,6 +128,12 @@ class DensityPoint(BaseModel):
 class AnalyticsResponse(BaseModel):
     daily_totals: list[DailyTotal]
     density: list[DensityPoint]
+    # Year-to-date peak: the single AK-local calendar day (since 1-Jan of the
+    # current AK year) with the most energy dispensed across the allowed EVSEs.
+    # NOT affected by the date-range filter — only by the EVSE filter. Both
+    # fields are None until the first session of the year lands.
+    max_daily_energy_kwh: float | None = None
+    max_daily_energy_date: str | None = None   # "YYYY-MM-DD" (Alaska local)
 
 
 # ── Export ────────────────────────────────────────────────────────────────────

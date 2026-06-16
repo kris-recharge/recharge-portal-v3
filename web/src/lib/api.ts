@@ -202,6 +202,9 @@ export interface DensityPoint {
 export interface AnalyticsResponse {
   daily_totals: DailyTotal[]
   density: DensityPoint[]
+  // YTD peak 24h energy — EVSE-filtered, NOT date-filtered. null until first session of the year.
+  max_daily_energy_kwh: number | null
+  max_daily_energy_date: string | null   // "YYYY-MM-DD" (Alaska local)
 }
 
 export function fetchAnalytics(params?: {

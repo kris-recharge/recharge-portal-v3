@@ -84,6 +84,40 @@ async def get_analytics(
             end_utc,
         )
 
+        # ── YTD peak: AK-local day with most energy since 1-Jan ──────────────
+        # Independent of the date-range filter; bounded only to the current AK
+        # calendar year and the allowed EVSEs. Resets automatically each 1-Jan.
+        ytd_row = await conn.fetchrow(
+            """
+            WITH sessions AS (
+                SELECT
+                    station_id,
+                    connector_id,
+                    transaction_id,
+                    MIN(ts)                                   AS start_ts,
+                    MAX(energy_wh) - MIN(energy_wh)           AS energy_wh_delta
+                FROM meter_values_parsed
+                WHERE station_id = ANY($1::text[])
+                  AND transaction_id IS NOT NULL
+                  AND (ts AT TIME ZONE 'America/Anchorage')
+                        >= date_trunc('year', (now() AT TIME ZONE 'America/Anchorage'))
+                GROUP BY station_id, connector_id, transaction_id
+            ),
+            daily AS (
+                SELECT
+                    (start_ts AT TIME ZONE 'America/Anchorage')::date AS ak_date,
+                    COALESCE(SUM(energy_wh_delta), 0) / 1000.0         AS energy_kwh
+                FROM sessions
+                GROUP BY ak_date
+            )
+            SELECT ak_date, energy_kwh
+            FROM daily
+            ORDER BY energy_kwh DESC, ak_date DESC
+            LIMIT 1
+            """,
+            allowed,
+        )
+
         # ── Density: session-start counts by AK day-of-week + hour ───────────
         density_rows = await conn.fetch(
             """
@@ -131,4 +165,15 @@ async def get_analytics(
         for r in density_rows
     ]
 
-    return AnalyticsResponse(daily_totals=daily_totals, density=density)
+    max_daily_energy_kwh: float | None = None
+    max_daily_energy_date: str | None = None
+    if ytd_row is not None and ytd_row["energy_kwh"] is not None:
+        max_daily_energy_kwh = round(float(ytd_row["energy_kwh"]), 2)
+        max_daily_energy_date = str(ytd_row["ak_date"])
+
+    return AnalyticsResponse(
+        daily_totals=daily_totals,
+        density=density,
+        max_daily_energy_kwh=max_daily_energy_kwh,
+        max_daily_energy_date=max_daily_energy_date,
+    )

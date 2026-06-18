@@ -1,8 +1,11 @@
 /** Data Export tab — inherits filters from Sessions tab; date-range, EVSE, XLSX download.
- *  v3.2: CSV option removed — export is XLSX-only. */
+ *  v3.2: CSV option removed — export is XLSX-only.
+ *  v3.2: second box "Export Maintenance Activities" (PM logs, Q&A, parts) added to
+ *  the right of the sessions export. Both boxes share the same date + EVSE filters;
+ *  the maintenance export is EVSE-scoped server-side via portal_users. */
 
-import { useState } from 'react'
-import { buildExportUrl, EVSE_OPTIONS } from '../lib/api'
+import { useState, type ReactNode } from 'react'
+import { buildExportUrl, buildMaintenanceExportUrl, EVSE_OPTIONS } from '../lib/api'
 import { supabase } from '../lib/supabase'
 import { Download, Loader2 } from 'lucide-react'
 
@@ -25,11 +28,21 @@ interface Props {
   initialFilters?: ExportFilters
 }
 
-export function ExportTab({ initialFilters }: Props) {
+interface ExportCardProps {
+  title:     string
+  initialFilters?: ExportFilters
+  carriedOver: boolean
+  /** Build the download URL for the selected filters. */
+  buildUrl:  (f: { start_date: string; end_date: string; station_id?: string[] }) => string
+  /** Downloaded filename prefix, e.g. "sessions" → sessions_<start>_to_<end>.xlsx */
+  filePrefix: string
+  footer:    ReactNode
+}
+
+function ExportCard({ title, initialFilters, carriedOver, buildUrl, filePrefix, footer }: ExportCardProps) {
   const [startDate,  setStartDate]  = useState(initialFilters?.startDate  || daysAgoAK(7))
   const [endDate,    setEndDate]    = useState(initialFilters?.endDate    || todayAK())
   const [stationIds, setStationIds] = useState<string[]>(initialFilters?.stationIds ?? [])
-  const format = 'xlsx' as const   // v3.2: XLSX-only export
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState<string | null>(null)
 
@@ -45,10 +58,9 @@ export function ExportTab({ initialFilters }: Props) {
     setLoading(true)
     setError(null)
     try {
-      const url = buildExportUrl({
+      const url = buildUrl({
         start_date: startDate,
         end_date:   endDate,
-        format,
         station_id: stationIds.length ? stationIds : undefined,
       })
       const { data: { session } } = await supabase.auth.getSession()
@@ -64,7 +76,7 @@ export function ExportTab({ initialFilters }: Props) {
       const blob = await res.blob()
       const link = document.createElement('a')
       link.href = URL.createObjectURL(blob)
-      link.download = `sessions_${startDate}_to_${endDate}.${format}`
+      link.download = `${filePrefix}_${startDate}_to_${endDate}.xlsx`
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
@@ -77,91 +89,122 @@ export function ExportTab({ initialFilters }: Props) {
   }
 
   return (
-    <div className="max-w-lg">
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-5">
-        <h2 className="text-sm font-semibold text-gray-700">Export Charging Sessions</h2>
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-5">
+      <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
 
-        {initialFilters && (
-          <p className="text-xs text-blue-600 bg-blue-50 rounded-lg px-3 py-2">
-            Filters carried over from Charging Sessions tab. Adjust as needed.
-          </p>
-        )}
+      {carriedOver && (
+        <p className="text-xs text-blue-600 bg-blue-50 rounded-lg px-3 py-2">
+          Filters carried over from Charging Sessions tab. Adjust as needed.
+        </p>
+      )}
 
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Start Date (Alaska)</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={e => setStartDate(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">End Date (Alaska)</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={e => setEndDate(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">EVSE</label>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                onClick={() => setStationIds([])}
-                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                  allSelected
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'
-                }`}
-              >
-                All
-              </button>
-              {EVSE_OPTIONS.map(ev => {
-                const selected = stationIds.includes(ev.id)
-                return (
-                  <button
-                    key={ev.id}
-                    onClick={() => toggleEvse(ev.id)}
-                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                      selected
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'
-                    }`}
-                  >
-                    {ev.name}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
+      <div className="space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Start Date (Alaska)</label>
+          <input
+            type="date"
+            value={startDate}
+            onChange={e => setStartDate(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
         </div>
 
-        <button
-          onClick={handleDownload}
-          disabled={loading}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors"
-        >
-          {loading
-            ? <><Loader2 size={16} className="animate-spin" /> Preparing…</>
-            : <><Download size={16} /> Download {format.toUpperCase()}</>
-          }
-        </button>
-        {error && <p className="text-xs text-red-500">{error}</p>}
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">End Date (Alaska)</label>
+          <input
+            type="date"
+            value={endDate}
+            onChange={e => setEndDate(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
 
-        <p className="text-xs text-gray-400">
-          Sessions sheet: Start/End DateTime (AK), EVSE, Location, Connector, Type,
-          Max kW, Energy kWh, Duration (min), SoC Start/End, Authentication, Authentication Method, Est. Revenue, VID.
-          {' '}Also includes a <em>Vendor Faults</em> sheet (non-NoError
-          StatusNotifications) and a <em>Utility Reads</em> sheet (daily metered vs.
-          dispensed kWh and efficiency % per site) for the selected date range.
-        </p>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">EVSE</label>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setStationIds([])}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                allSelected
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'
+              }`}
+            >
+              All
+            </button>
+            {EVSE_OPTIONS.map(ev => {
+              const selected = stationIds.includes(ev.id)
+              return (
+                <button
+                  key={ev.id}
+                  onClick={() => toggleEvse(ev.id)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                    selected
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'
+                  }`}
+                >
+                  {ev.name}
+                </button>
+              )
+            })}
+          </div>
+        </div>
       </div>
+
+      <button
+        onClick={handleDownload}
+        disabled={loading}
+        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors"
+      >
+        {loading
+          ? <><Loader2 size={16} className="animate-spin" /> Preparing…</>
+          : <><Download size={16} /> Download XLSX</>
+        }
+      </button>
+      {error && <p className="text-xs text-red-500">{error}</p>}
+
+      {footer}
+    </div>
+  )
+}
+
+export function ExportTab({ initialFilters }: Props) {
+  return (
+    <div className="grid gap-6 lg:grid-cols-2 max-w-4xl">
+      <ExportCard
+        title="Export Charging Sessions"
+        initialFilters={initialFilters}
+        carriedOver={!!initialFilters}
+        buildUrl={f => buildExportUrl({ ...f, format: 'xlsx' })}
+        filePrefix="sessions"
+        footer={
+          <p className="text-xs text-gray-400">
+            Sessions sheet: Start/End DateTime (AK), EVSE, Location, Connector, Type,
+            Max kW, Energy kWh, Duration (min), SoC Start/End, Authentication, Authentication Method, Est. Revenue, VID.
+            {' '}Also includes a <em>Vendor Faults</em> sheet (non-NoError
+            StatusNotifications) and a <em>Utility Reads</em> sheet (daily metered vs.
+            dispensed kWh and efficiency % per site) for the selected date range.
+          </p>
+        }
+      />
+
+      <ExportCard
+        title="Export Maintenance Activities"
+        initialFilters={initialFilters}
+        carriedOver={false}
+        buildUrl={buildMaintenanceExportUrl}
+        filePrefix="maintenance"
+        footer={
+          <p className="text-xs text-gray-400">
+            PM/maintenance logs submitted in the selected date range, for your
+            approved EVSEs. <em>PM Logs</em> sheet: one row per log (EVSE, technician,
+            submitted timestamp, labor hours, overall result, work description).
+            {' '}<em>Task Results</em> sheet: every question and the response captured.
+            {' '}<em>Parts Replaced</em> sheet: parts logged on each visit.
+          </p>
+        }
+      />
     </div>
   )
 }

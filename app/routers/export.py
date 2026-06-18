@@ -408,3 +408,278 @@ async def export_sessions(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}.xlsx"'},
     )
+
+
+# ── Maintenance Activities export (v3.2) ──────────────────────────────────────
+
+
+def _task_response(r) -> str:
+    """Render a single PM task answer into one human-readable cell.
+
+    Tasks vary by input_type: pass/fail, checkbox (completed), measurement, or
+    free text. Pick whichever field the tech actually filled in.
+    """
+    if r["result_pass_fail"]:
+        return str(r["result_pass_fail"])          # pass | fail | na
+    if r["result_completed"] is not None:
+        return "Completed" if r["result_completed"] else "Not completed"
+    mv = r["result_measured_value"]
+    if mv not in (None, ""):
+        return str(mv)
+    if r["result_text"]:
+        return str(r["result_text"])
+    return ""
+
+
+@router.get("/maintenance")
+async def export_maintenance(
+    user: CurrentUser,
+    start_date: str = Query(..., description="YYYY-MM-DD Alaska local"),
+    end_date: str = Query(..., description="YYYY-MM-DD Alaska local"),
+    station_id: list[str] | None = Query(None),
+    format: str = Query("xlsx", pattern="^(xlsx)$"),  # xlsx only, mirrors sessions export
+):
+    """XLSX dump of PM/maintenance logs (header, every Q&A, parts) for warranty proof.
+
+    EVSE scoping mirrors the sessions export exactly so a user can never reach PM
+    logs for a unit they are not approved for in portal_users.allowed_evse_ids:
+
+      • Non-admin → records are scoped to the intersection of their approved EVSEs
+        and any chip selection (WHERE c.external_id = ANY(allowed)). Units with a
+        NULL external_id (non-LynkWell, e.g. Terra184) can never match.
+      • Admin (ADMIN_EMAIL / DEV_BYPASS) with no chip filter → no external_id
+        restriction, so NULL-external_id units are included. When an admin DOES
+        select chips, the same allowed-list filter applies.
+    """
+    is_admin = user.email == ADMIN_EMAIL or DEV_BYPASS_AUTH
+
+    all_ids = get_all_station_ids()
+    allowed = filter_evse_ids(all_ids, user.allowed_evse_ids)
+    if station_id:
+        allowed = [s for s in station_id if s in allowed]
+
+    start_utc = (
+        datetime.fromisoformat(f"{start_date}T00:00:00")
+        .replace(tzinfo=_AK)
+        .astimezone(timezone.utc)
+    )
+    end_utc = (
+        datetime.fromisoformat(f"{end_date}T23:59:59")
+        .replace(tzinfo=_AK)
+        .astimezone(timezone.utc)
+    )
+
+    # Admins dumping everything (no chip filter) skip the external_id allowlist so
+    # NULL-external_id units appear; everyone else is restricted to `allowed`.
+    unrestricted = is_admin and not station_id
+
+    async with acquire() as conn:
+        if unrestricted:
+            record_rows = await conn.fetch(
+                """
+                SELECT
+                    mr.id::text AS id,
+                    mr.record_timestamp,
+                    mr.record_type,
+                    mr.technician_name,
+                    mr.onsite_hours,
+                    mr.mobilized_hours,
+                    mr.overall_result,
+                    mr.firmware_version,
+                    mr.work_description,
+                    mr.additional_work_needed,
+                    mr.planned_future_work,
+                    c.external_id,
+                    c.name AS charger_name,
+                    s.name AS site_name
+                FROM maintenance_records mr
+                JOIN chargers c ON c.id = mr.charger_id
+                LEFT JOIN sites s ON s.id = mr.site_id
+                WHERE mr.record_timestamp >= $1
+                  AND mr.record_timestamp <= $2
+                ORDER BY mr.record_timestamp DESC
+                """,
+                start_utc, end_utc,
+            )
+        else:
+            record_rows = await conn.fetch(
+                """
+                SELECT
+                    mr.id::text AS id,
+                    mr.record_timestamp,
+                    mr.record_type,
+                    mr.technician_name,
+                    mr.onsite_hours,
+                    mr.mobilized_hours,
+                    mr.overall_result,
+                    mr.firmware_version,
+                    mr.work_description,
+                    mr.additional_work_needed,
+                    mr.planned_future_work,
+                    c.external_id,
+                    c.name AS charger_name,
+                    s.name AS site_name
+                FROM maintenance_records mr
+                JOIN chargers c ON c.id = mr.charger_id
+                LEFT JOIN sites s ON s.id = mr.site_id
+                WHERE mr.record_timestamp >= $1
+                  AND mr.record_timestamp <= $2
+                  AND c.external_id = ANY($3::text[])
+                ORDER BY mr.record_timestamp DESC
+                """,
+                start_utc, end_utc, allowed,
+            )
+
+        record_ids = [r["id"] for r in record_rows]
+
+        # Task results + the question text they answer. Scoped to the records we
+        # already authorised above, so there's no back-door to other units' Q&A.
+        task_rows = []
+        part_rows = []
+        if record_ids:
+            task_rows = await conn.fetch(
+                """
+                SELECT
+                    tr.record_id::text AS record_id,
+                    t.task_category,
+                    t.task_order,
+                    t.task_name,
+                    t.unit_of_measure,
+                    t.critical_fail,
+                    tr.result_pass_fail,
+                    tr.result_completed,
+                    tr.result_measured_value,
+                    tr.result_text,
+                    tr.task_notes
+                FROM pm_task_results tr
+                LEFT JOIN pm_template_tasks t ON t.id = tr.task_id
+                WHERE tr.record_id = ANY($1::uuid[])
+                ORDER BY tr.record_id, t.task_order
+                """,
+                record_ids,
+            )
+            part_rows = await conn.fetch(
+                """
+                SELECT
+                    record_id::text AS record_id,
+                    part_name,
+                    part_number,
+                    action_taken,
+                    notes
+                FROM maintenance_parts_replaced
+                WHERE record_id = ANY($1::uuid[])
+                ORDER BY record_id, part_name
+                """,
+                record_ids,
+            )
+
+    def _evse_label(external_id, charger_name) -> str:
+        return display_name(external_id) if external_id else (charger_name or "")
+
+    def _loc_label(external_id, site_name) -> str:
+        return location_label(external_id) if external_id else (site_name or "")
+
+    # Submitted-timestamp lookup per record, reused on the detail sheets.
+    submitted_by_id = {r["id"]: _ak_dt(r["record_timestamp"]) for r in record_rows}
+    evse_by_id = {r["id"]: _evse_label(r["external_id"], r["charger_name"]) for r in record_rows}
+
+    # ── Sheet 1: PM Logs (one row per log) ────────────────────────────────────
+    log_columns = [
+        "Log ID", "EVSE", "Location", "Record Type", "Technician",
+        "Submitted (AK)", "Onsite Hrs", "Mobilized Hrs", "Overall Result",
+        "Firmware", "Work Description", "Additional Work Needed",
+        "Planned Future Work",
+    ]
+    log_data: list[list] = []
+    for r in record_rows:
+        log_data.append([
+            r["id"],
+            _evse_label(r["external_id"], r["charger_name"]),
+            _loc_label(r["external_id"], r["site_name"]),
+            r["record_type"] or "",
+            r["technician_name"] or "",
+            _ak_dt(r["record_timestamp"]),
+            float(r["onsite_hours"]) if r["onsite_hours"] is not None else "",
+            float(r["mobilized_hours"]) if r["mobilized_hours"] is not None else "",
+            r["overall_result"] or "",
+            r["firmware_version"] or "",
+            r["work_description"] or "",
+            "Yes" if r["additional_work_needed"] else "No",
+            r["planned_future_work"] or "",
+        ])
+
+    # ── Sheet 2: Task Results (one row per question) ──────────────────────────
+    task_columns = [
+        "Log ID", "EVSE", "Submitted (AK)", "Category", "Question",
+        "Response", "Measured Value", "Unit", "Critical", "Notes",
+    ]
+    task_data: list[list] = []
+    for tr in task_rows:
+        rid = tr["record_id"]
+        mv = tr["result_measured_value"]
+        task_data.append([
+            rid,
+            evse_by_id.get(rid, ""),
+            submitted_by_id.get(rid),
+            tr["task_category"] or "",
+            tr["task_name"] or "",
+            _task_response(tr),
+            str(mv) if mv not in (None, "") else "",
+            tr["unit_of_measure"] or "",
+            "Yes" if tr["critical_fail"] else "",
+            tr["task_notes"] or "",
+        ])
+
+    # ── Sheet 3: Parts Replaced (one row per part) ────────────────────────────
+    part_columns = [
+        "Log ID", "EVSE", "Submitted (AK)", "Part Name", "Part Number",
+        "Action Taken", "Notes",
+    ]
+    part_data: list[list] = []
+    for p in part_rows:
+        rid = p["record_id"]
+        part_data.append([
+            rid,
+            evse_by_id.get(rid, ""),
+            submitted_by_id.get(rid),
+            p["part_name"] or "",
+            p["part_number"] or "",
+            p["action_taken"] or "",
+            p["notes"] or "",
+        ])
+
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+
+    ws1 = wb.active
+    ws1.title = "PM Logs"
+    ws1.append(log_columns)
+    for row in log_data:
+        ws1.append(row)
+    for cell in ws1["F"][1:]:   # Submitted (AK)
+        cell.number_format = _XLSX_DT_FORMAT
+
+    ws2 = wb.create_sheet(title="Task Results")
+    ws2.append(task_columns)
+    for row in task_data:
+        ws2.append(row)
+    for cell in ws2["C"][1:]:   # Submitted (AK)
+        cell.number_format = _XLSX_DT_FORMAT
+
+    ws3 = wb.create_sheet(title="Parts Replaced")
+    ws3.append(part_columns)
+    for row in part_data:
+        ws3.append(row)
+    for cell in ws3["C"][1:]:   # Submitted (AK)
+        cell.number_format = _XLSX_DT_FORMAT
+
+    filename = f"maintenance_{start_date}_to_{end_date}"
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.xlsx"'},
+    )

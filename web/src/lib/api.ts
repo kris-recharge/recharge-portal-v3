@@ -246,6 +246,23 @@ export function buildExportUrl(params: {
   return `${BASE}/api/export?${qs}`
 }
 
+// v3.2: Maintenance Activities export — PM logs, every Q&A, and parts replaced.
+// Same date + EVSE filtering as buildExportUrl; server enforces portal_users
+// allowed_evse_ids so a user can't reach logs for unapproved EVSEs.
+export function buildMaintenanceExportUrl(params: {
+  start_date: string
+  end_date: string
+  station_id?: string[]
+}): string {
+  const qs = new URLSearchParams({
+    start_date: params.start_date,
+    end_date:   params.end_date,
+    format:     'xlsx',
+  })
+  params.station_id?.forEach(s => qs.append('station_id', s))
+  return `${BASE}/api/export/maintenance?${qs}`
+}
+
 // ── Alerts Config & History ────────────────────────────────────────────────
 
 export type AlertType = 'offline_idle' | 'offline_mid_session' | 'fault' | 'suspicious_vid' | 'pm_due_14d' | 'pm_overdue'

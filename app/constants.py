@@ -50,6 +50,14 @@ PLATFORM_MAP: dict[str, str] = {
     "as_LYHe6mZTRKiFfziSNJFvJ":  "MaxiCharger",   # Glennallen    (Autel)
 }
 
+# Product-line (platform) → hardware manufacturer. Drives the cord-replacement
+# strategy shown on the Connector Count tab (Tritium = time-based, Autel/ABB/
+# Alpitronics = connection-count-based). Add new platforms here as the fleet grows.
+MANUFACTURER_MAP: dict[str, str] = {
+    "MaxiCharger": "Autel",
+    "RTM":         "Tritium",
+}
+
 # Delta Junction connector 1 changed CHAdeMO → NACS on 2026-01-30 (AKST)
 _DELTA_STATIONS       = {"as_oXoa7HXphUu5riXsSW253", "as_xTUHfTKoOvKSfYZhhdlhT"}
 _DELTA_CONN1_CUTOFF   = date(2026, 1, 30)
@@ -91,6 +99,25 @@ def get_platform_map() -> dict[str, str]:
     out = dict(PLATFORM_MAP)
     out.update(_load_overrides().get("platform_map", {}))
     return out
+
+
+def get_manufacturer_map() -> dict[str, str]:
+    out = dict(MANUFACTURER_MAP)
+    out.update(_load_overrides().get("manufacturer_map", {}))
+    return out
+
+
+def manufacturer_for(station_id: str) -> str:
+    """Hardware manufacturer for a station, derived from its platform.
+
+    A per-station ``manufacturer`` override wins over the platform mapping so a
+    one-off unit can be corrected without touching the platform map.
+    """
+    ovr = _load_overrides().get("manufacturer", {})
+    if station_id in ovr:
+        return ovr[station_id]
+    platform = get_platform_map().get(station_id, "")
+    return get_manufacturer_map().get(platform, "")
 
 
 def get_archived_station_ids() -> list[str]:

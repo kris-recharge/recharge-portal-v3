@@ -151,6 +151,44 @@ export function fetchConnectivity(): Promise<ConnectivityResponse> {
   return apiFetch<ConnectivityResponse>('/api/connectivity')
 }
 
+// ── Connector Count (cord-life plug-in odometer) ──────────────────────────────
+
+export interface ConnectorCount {
+  connector_id: number
+  connector_type: string
+  attempts: number
+  previous_cord_attempts: number | null
+  last_reset_ak: string | null
+}
+
+export interface ConnectorCountCard {
+  station_id: string
+  evse_name: string
+  manufacturer: string
+  location: string
+  connectors: ConnectorCount[]
+}
+
+export interface ConnectorCountResponse {
+  chargers: ConnectorCountCard[]
+  as_of_utc: string
+}
+
+export function fetchConnectorCount(): Promise<ConnectorCountResponse> {
+  return apiFetch<ConnectorCountResponse>('/api/connector-count')
+}
+
+export function resetConnectorCord(
+  stationId: string,
+  connectorId: number,
+  note: string,
+): Promise<ConnectorCount> {
+  return apiFetch<ConnectorCount>(
+    `/api/connector-count/${encodeURIComponent(stationId)}/${connectorId}/reset`,
+    { method: 'POST', body: JSON.stringify({ note }) },
+  )
+}
+
 // ── Session Detail (meter value time-series) ──────────────────────────────────
 
 export interface MeterValuePoint {

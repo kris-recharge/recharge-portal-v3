@@ -10,6 +10,7 @@ import { fetchMe, type Me } from './lib/api'
 import { SessionsTab }     from './pages/SessionsTab'
 import { StatusTab }       from './pages/StatusTab'
 import { ConnectivityTab } from './pages/ConnectivityTab'
+import { ConnectorCountTab } from './pages/ConnectorCountTab'
 import { ExportTab }       from './pages/ExportTab'
 import { AlertsTab }       from './pages/AlertsTab'
 import { MaintenanceTab }  from './pages/MaintenanceTab'
@@ -18,12 +19,13 @@ import { AdminTab }        from './pages/AdminTab'
 import { AlertBanner }     from './components/AlertBanner'
 import { LogOut, Zap, Mail } from 'lucide-react'
 
-type Tab = 'sessions' | 'status' | 'connectivity' | 'export' | 'alerts' | 'maintenance' | 'utility' | 'admin'
+type Tab = 'sessions' | 'status' | 'connectivity' | 'connectors' | 'export' | 'alerts' | 'maintenance' | 'utility' | 'admin'
 
 const BASE_TABS: { id: Tab; label: string }[] = [
   { id: 'sessions',     label: 'Charging Sessions' },
   { id: 'status',       label: 'Status History' },
   { id: 'connectivity', label: 'Connectivity' },
+  { id: 'connectors',   label: 'Connector Count' },
   { id: 'utility',      label: 'Utility Reads' },   // v3.2
   { id: 'export',       label: 'Data Export' },
   { id: 'alerts',       label: 'Alerts' },
@@ -135,6 +137,7 @@ export default function App() {
         {activeTab === 'sessions'     && <SessionsTab onFiltersApplied={setSessionFilters} />}
         {activeTab === 'status'       && <StatusTab />}
         {activeTab === 'connectivity' && <ConnectivityTab />}
+        {activeTab === 'connectors'   && <ConnectorCountTab canReset={isAdmin || canSubmitPm} />}
         {activeTab === 'export'       && <ExportTab initialFilters={sessionFilters ?? undefined} />}
         {activeTab === 'alerts'       && <AlertsTab />}
         {activeTab === 'maintenance'  && (

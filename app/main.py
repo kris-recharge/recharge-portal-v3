@@ -17,6 +17,7 @@ from .routers import (
 from .routers import utility
 from .routers import maintenance
 from .routers import me
+from .routers import connector_count
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1257,6 +1258,7 @@ app.include_router(alerts_config.router)
 app.include_router(utility.router)
 app.include_router(maintenance.router)
 app.include_router(me.router)
+app.include_router(connector_count.router)
 
 
 @app.get("/api/health")

@@ -43,6 +43,8 @@ from .config import (
     SMTP_PORT,
     SMTP_USER,
 )
+from .connector_counts import accumulate as accumulate_connector_counts
+from .connector_counts import ensure_tables as ensure_connector_count_tables
 from .constants import display_name, get_all_station_ids
 from .db import get_conn_sync
 
@@ -766,6 +768,17 @@ def _check_pm_due(conn) -> None:
 def _run_poll_loop() -> None:
     global _cleanup_counter, _pm_check_counter
     logger.info("Alert poll loop started (interval=%ds)", POLL_INTERVAL_SEC)
+
+    # Ensure the connector-count odometer tables exist before the first tick.
+    try:
+        conn = get_conn_sync()
+        try:
+            ensure_connector_count_tables(conn)
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.error("connector_counts table init failed: %s", exc, exc_info=True)
+
     while True:
         try:
             conn = get_conn_sync()
@@ -774,6 +787,9 @@ def _run_poll_loop() -> None:
                 _check_offline_mid_session(conn)
                 _check_faults(conn)
                 _check_suspicious_vid(conn)
+
+                # Roll the connector-count odometer forward (plug-in counter).
+                accumulate_connector_counts(conn)
 
                 # PM due-date check — runs every ~1 hour
                 _pm_check_counter += 1

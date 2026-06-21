@@ -77,6 +77,33 @@ class ConnectivityResponse(BaseModel):
     as_of_utc: datetime
 
 
+# ── Connector Count (cord-life plug-in odometer) ──────────────────────────────
+
+class ConnectorCount(BaseModel):
+    connector_id: int
+    connector_type: str
+    attempts: int                          # current cord: baseline + (odometer − cord start)
+    previous_cord_attempts: int | None = None   # how long the last cord lasted (if ever replaced)
+    last_reset_ak: str | None = None            # AK timestamp of last cord change
+
+
+class ConnectorCountCard(BaseModel):
+    station_id: str
+    evse_name: str
+    manufacturer: str
+    location: str
+    connectors: list[ConnectorCount]   # connector 1 (left) then 2 (right)
+
+
+class ConnectorCountResponse(BaseModel):
+    chargers: list[ConnectorCountCard]
+    as_of_utc: datetime
+
+
+class CordResetRequest(BaseModel):
+    note: str
+
+
 # ── Alerts (SSE) ──────────────────────────────────────────────────────────────
 
 class AlertEvent(BaseModel):

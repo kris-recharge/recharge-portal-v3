@@ -11,6 +11,7 @@ from pydantic import BaseModel
 # ── Charging Sessions ─────────────────────────────────────────────────────────
 
 class ChargingSession(BaseModel):
+    status: str = "completed"   # "completed" | "failed_start"
     transaction_id: str
     station_id: str
     evse_name: str
@@ -30,7 +31,9 @@ class ChargingSession(BaseModel):
 
 class SessionsResponse(BaseModel):
     sessions: list[ChargingSession]
-    total: int
+    total: int                       # all rows (completed + failed attempts)
+    completed_count: int = 0         # rows with a real transaction
+    failed_count: int = 0            # Preparing-but-never-Charging attempts
     page: int
     page_size: int
     total_energy_kwh: float = 0.0

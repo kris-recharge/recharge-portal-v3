@@ -178,20 +178,123 @@ async def get_sessions(
                        AND (ep.effective_end IS NULL OR ep.effective_end > s.start_utc)
                      ORDER BY ep.effective_start DESC LIMIT 1) AS connection_fee
                 FROM sessions s
+            ),
+            real_rows AS (
+                SELECT
+                    'session'::text                     AS kind,
+                    station_id,
+                    connector_id,
+                    transaction_id::text                AS transaction_id,
+                    start_utc,
+                    end_utc,
+                    max_power_w::numeric                AS max_power_w,
+                    energy_wh_delta::numeric            AS energy_wh_delta,
+                    soc_start::numeric                  AS soc_start,
+                    soc_first_nonzero::numeric          AS soc_first_nonzero,
+                    soc_end::numeric                    AS soc_end,
+                    id_tag,
+                    price_per_kwh::numeric              AS price_per_kwh,
+                    connection_fee::numeric             AS connection_fee
+                FROM with_auth
+                WHERE ($3::timestamptz IS NULL OR start_utc <= $3)  -- v3.2: START in range
+            ),
+            -- ── Failed start attempts ──────────────────────────────────────────
+            -- A "Preparing" StatusNotification that never reached "Charging"
+            -- (no Charging status AND no StartTransaction) before the connector
+            -- returned to "Available" (capped at 2 h).  These never mint a
+            -- transaction_id, so they never appear in meter_values_parsed and
+            -- are otherwise invisible in the sessions table.
+            sn AS (
+                SELECT
+                    asset_id,
+                    connector_id,
+                    received_at,
+                    action_payload->>'status'                        AS status,
+                    LAG(action_payload->>'status') OVER (
+                        PARTITION BY asset_id, connector_id ORDER BY received_at
+                    )                                                AS prev_status
+                FROM ocpp_events
+                WHERE asset_id = ANY($1::text[])
+                  AND action = 'StatusNotification'
+                  AND action_payload->>'status' IS NOT NULL
+            ),
+            charge_sig AS (   -- any signal that a transaction actually began
+                SELECT asset_id, connector_id, received_at
+                FROM ocpp_events
+                WHERE asset_id = ANY($1::text[])
+                  AND ( (action = 'StatusNotification'
+                         AND action_payload->>'status' = 'Charging')
+                        OR action = 'StartTransaction' )
+            ),
+            avail AS (        -- connector cleared / unplugged
+                SELECT asset_id, connector_id, received_at
+                FROM ocpp_events
+                WHERE asset_id = ANY($1::text[])
+                  AND action = 'StatusNotification'
+                  AND action_payload->>'status' = 'Available'
+            ),
+            attempts AS (
+                SELECT
+                    s.asset_id    AS station_id,
+                    s.connector_id,
+                    s.received_at AS attempt_at
+                FROM sn s
+                WHERE s.status = 'Preparing'
+                  AND s.prev_status IS DISTINCT FROM 'Preparing'   -- first Preparing of an episode
+                  AND ($2::timestamptz IS NULL OR s.received_at >= $2)
+                  AND ($3::timestamptz IS NULL OR s.received_at <= $3)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM charge_sig c
+                      WHERE c.asset_id = s.asset_id
+                        AND c.connector_id IS NOT DISTINCT FROM s.connector_id
+                        AND c.received_at > s.received_at
+                        AND c.received_at < LEAST(
+                              s.received_at + INTERVAL '2 hours',
+                              COALESCE((SELECT MIN(a.received_at) FROM avail a
+                                        WHERE a.asset_id = s.asset_id
+                                          AND a.connector_id IS NOT DISTINCT FROM s.connector_id
+                                          AND a.received_at > s.received_at),
+                                       'infinity'::timestamptz))
+                  )
+            ),
+            failed_rows AS (
+                SELECT
+                    'failed'::text                      AS kind,
+                    station_id,
+                    connector_id,
+                    'attempt:' || station_id || ':' || COALESCE(connector_id, 0)
+                               || ':' || EXTRACT(EPOCH FROM attempt_at)::bigint::text AS transaction_id,
+                    attempt_at                          AS start_utc,
+                    NULL::timestamptz                   AS end_utc,
+                    NULL::numeric                       AS max_power_w,
+                    NULL::numeric                       AS energy_wh_delta,
+                    NULL::numeric                       AS soc_start,
+                    NULL::numeric                       AS soc_first_nonzero,
+                    NULL::numeric                       AS soc_end,
+                    NULL::text                          AS id_tag,
+                    NULL::numeric                       AS price_per_kwh,
+                    NULL::numeric                       AS connection_fee
+                FROM attempts
+            ),
+            unioned AS (
+                SELECT * FROM real_rows
+                UNION ALL
+                SELECT * FROM failed_rows
             )
             SELECT *,
-                   COUNT(*) OVER()                                        AS total_count,
-                   SUM(energy_wh_delta) OVER()                            AS agg_energy_wh,
+                   COUNT(*) OVER()                                              AS total_count,
+                   COUNT(*) FILTER (WHERE kind = 'session') OVER()              AS completed_count,
+                   SUM(energy_wh_delta) FILTER (WHERE kind = 'session') OVER()  AS agg_energy_wh,
                    SUM(
-                       CASE WHEN price_per_kwh IS NOT NULL OR connection_fee IS NOT NULL
+                       CASE WHEN kind = 'session'
+                                 AND (price_per_kwh IS NOT NULL OR connection_fee IS NOT NULL)
                             THEN COALESCE(connection_fee, 0)
                                  + (energy_wh_delta / 1000.0) * COALESCE(price_per_kwh, 0)
                             ELSE 0 END
-                   ) OVER()                                                AS agg_revenue,
-                   AVG(EXTRACT(EPOCH FROM (end_utc - start_utc)) / 60.0) OVER()
-                                                                           AS agg_avg_duration_min
-            FROM with_auth
-            WHERE ($3::timestamptz IS NULL OR start_utc <= $3)  -- v3.2: START in range
+                   ) OVER()                                                     AS agg_revenue,
+                   AVG(EXTRACT(EPOCH FROM (end_utc - start_utc)) / 60.0)
+                       FILTER (WHERE kind = 'session') OVER()                   AS agg_avg_duration_min
+            FROM unioned
             ORDER BY start_utc DESC NULLS LAST                  -- v3.2: newest start on top
             LIMIT $4 OFFSET $5
             """,
@@ -202,7 +305,9 @@ async def get_sessions(
             offset,
         )
 
-    total         = int(rows[0]["total_count"])                       if rows else 0
+    total           = int(rows[0]["total_count"])                     if rows else 0
+    completed_count = int(rows[0]["completed_count"])                 if rows else 0
+    failed_count    = total - completed_count
     total_energy  = float(rows[0]["agg_energy_wh"] or 0) / 1000.0    if rows else 0.0
     total_revenue = float(rows[0]["agg_revenue"]   or 0)              if rows else 0.0
     avg_dur_raw   = rows[0]["agg_avg_duration_min"]                    if rows else None
@@ -228,8 +333,11 @@ async def get_sessions(
             r["soc_start"], r["soc_first_nonzero"], r["soc_end"]
         )
 
+        status = "completed" if r["kind"] == "session" else "failed_start"
+
         sessions.append(
             ChargingSession(
+                status          = status,
                 transaction_id  = tx_id,
                 station_id      = sid,
                 evse_name       = display_name(sid),
@@ -251,6 +359,8 @@ async def get_sessions(
     return SessionsResponse(
         sessions=sessions,
         total=total,
+        completed_count=completed_count,
+        failed_count=failed_count,
         page=page,
         page_size=page_size,
         total_energy_kwh=round(total_energy, 3),

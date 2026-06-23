@@ -204,10 +204,12 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
 
   const sessions     = data?.sessions          ?? []
   const total        = data?.total             ?? 0
+  const completed    = data?.completed_count   ?? total
+  const failedCount  = data?.failed_count      ?? 0
   const totalEnergy  = data?.total_energy_kwh  ?? 0
   const totalRevenue = data?.total_revenue_usd ?? 0
   const avgDuration  = data?.avg_duration_min  ?? null
-  const avgDispensed = total > 0 ? totalEnergy / total : null
+  const avgDispensed = completed > 0 ? totalEnergy / completed : null
 
   const allEvseSelected = draft.stationIds.length === 0
 
@@ -402,10 +404,12 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <KPICard
             title="Total Sessions"
-            value={total.toLocaleString()}
+            value={completed.toLocaleString()}
             icon={<Activity size={16} />}
             color="blue"
-            subtitle={applied.stationIds.length ? `${applied.stationIds.length} EVSE` : 'All EVSEs'}
+            subtitle={failedCount > 0
+              ? `+${failedCount} failed start${failedCount === 1 ? '' : 's'}`
+              : (applied.stationIds.length ? `${applied.stationIds.length} EVSE` : 'All EVSEs')}
           />
           <KPICard
             title="Energy Delivered"
@@ -605,13 +609,27 @@ function SessionRow({
   session: ChargingSession
   onSelect: () => void
 }) {
+  const failed = s.status === 'failed_start'
   return (
     <tr
-      onClick={onSelect}
-      className="cursor-pointer"
-      title="Click to view session detail chart"
+      onClick={failed ? undefined : onSelect}
+      className={failed ? 'bg-amber-50/60' : 'cursor-pointer'}
+      title={failed
+        ? 'Charge attempt — connector went to Preparing but never started charging (no transaction). No meter data to chart.'
+        : 'Click to view session detail chart'}
     >
-      <td className="font-mono text-xs">{s.start_dt}</td>
+      <td className="font-mono text-xs">
+        {failed ? (
+          <div className="flex items-center gap-2">
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 uppercase tracking-wide whitespace-nowrap">
+              Failed start
+            </span>
+            <span>{s.start_dt}</span>
+          </div>
+        ) : (
+          s.start_dt
+        )}
+      </td>
       <td className="font-mono text-xs">{s.end_dt ?? '—'}</td>
       <td className="font-medium">{s.evse_name}</td>
       <td className="text-center">{s.connector_id ?? '—'}</td>

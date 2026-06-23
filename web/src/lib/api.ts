@@ -53,6 +53,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 export interface ChargingSession {
+  status: 'completed' | 'failed_start'
   transaction_id: string
   station_id: string
   evse_name: string
@@ -73,6 +74,8 @@ export interface ChargingSession {
 export interface SessionsResponse {
   sessions: ChargingSession[]
   total: number
+  completed_count?: number
+  failed_count?: number
   page: number
   page_size: number
   total_energy_kwh: number

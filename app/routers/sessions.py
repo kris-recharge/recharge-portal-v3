@@ -199,11 +199,13 @@ async def get_sessions(
                 WHERE ($3::timestamptz IS NULL OR start_utc <= $3)  -- v3.2: START in range
             ),
             -- ── Failed start attempts ──────────────────────────────────────────
-            -- A "Preparing" StatusNotification that never reached "Charging"
-            -- (no Charging status AND no StartTransaction) before the connector
-            -- returned to "Available" (capped at 2 h).  These never mint a
-            -- transaction_id, so they never appear in meter_values_parsed and
-            -- are otherwise invisible in the sessions table.
+            -- A plug-in (StatusNotification "Preparing") where the driver
+            -- presented a real credential (a non-VID token Authorize via CC reader
+            -- or app) but the session never reached "Charging" before the connector
+            -- cleared (capped at 2 h).  These never mint a transaction_id, so they
+            -- never appear in meter_values_parsed and are otherwise invisible.
+            -- Excluded by design: AutoCharge VID:* probes (Blocked when AutoCharge
+            -- isn't configured) and plug-and-unplug blips with no Authorize at all.
             sn AS (
                 SELECT
                     asset_id,
@@ -237,25 +239,51 @@ async def get_sessions(
                 SELECT
                     s.asset_id    AS station_id,
                     s.connector_id,
-                    s.received_at AS attempt_at
+                    s.received_at AS attempt_at,
+                    -- End of this plug-in episode: the next time the connector
+                    -- clears to Available, capped at 2 h if that event is missing.
+                    LEAST(
+                        s.received_at + INTERVAL '2 hours',
+                        COALESCE((SELECT MIN(a.received_at) FROM avail a
+                                  WHERE a.asset_id = s.asset_id
+                                    AND a.connector_id IS NOT DISTINCT FROM s.connector_id
+                                    AND a.received_at > s.received_at),
+                                 'infinity'::timestamptz)
+                    )                                            AS episode_end
                 FROM sn s
                 WHERE s.status = 'Preparing'
                   AND s.prev_status IS DISTINCT FROM 'Preparing'   -- first Preparing of an episode
                   AND ($2::timestamptz IS NULL OR s.received_at >= $2)
                   AND ($3::timestamptz IS NULL OR s.received_at <= $3)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM charge_sig c
-                      WHERE c.asset_id = s.asset_id
-                        AND c.connector_id IS NOT DISTINCT FROM s.connector_id
-                        AND c.received_at > s.received_at
-                        AND c.received_at < LEAST(
-                              s.received_at + INTERVAL '2 hours',
-                              COALESCE((SELECT MIN(a.received_at) FROM avail a
-                                        WHERE a.asset_id = s.asset_id
-                                          AND a.connector_id IS NOT DISTINCT FROM s.connector_id
-                                          AND a.received_at > s.received_at),
-                                       'infinity'::timestamptz))
-                  )
+            ),
+            attempts_filtered AS (
+                SELECT a.station_id, a.connector_id, a.attempt_at
+                FROM attempts a
+                WHERE
+                    -- (1) never reached Charging within the episode
+                    NOT EXISTS (
+                        SELECT 1 FROM charge_sig c
+                        WHERE c.asset_id = a.station_id
+                          AND c.connector_id IS NOT DISTINCT FROM a.connector_id
+                          AND c.received_at > a.attempt_at
+                          AND c.received_at < a.episode_end
+                    )
+                    -- (2) but a real, non-AutoCharge credential was presented:
+                    -- a token (non-VID) Authorize.  VID:* Authorizes are AutoCharge
+                    -- probes (Blocked when AutoCharge isn't configured) and on their
+                    -- own are NOT a user charge attempt; a plug-in that never
+                    -- produced any Authorize (plug-and-unplug) is likewise ignored.
+                    -- This keeps the CC/app-reader stall case the operator cares
+                    -- about.  Authorize messages carry no connector_id, so match on
+                    -- station + time window.
+                    AND EXISTS (
+                        SELECT 1 FROM ocpp_events az
+                        WHERE az.asset_id = a.station_id
+                          AND az.action = 'Authorize'
+                          AND az.action_payload->>'idTag' NOT LIKE 'VID:%'
+                          AND az.received_at BETWEEN a.attempt_at - INTERVAL '30 seconds'
+                                                 AND a.episode_end
+                    )
             ),
             failed_rows AS (
                 SELECT
@@ -274,7 +302,7 @@ async def get_sessions(
                     NULL::text                          AS id_tag,
                     NULL::numeric                       AS price_per_kwh,
                     NULL::numeric                       AS connection_fee
-                FROM attempts
+                FROM attempts_filtered
             ),
             unioned AS (
                 SELECT * FROM real_rows

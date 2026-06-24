@@ -408,7 +408,7 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
             icon={<Activity size={16} />}
             color="blue"
             subtitle={failedCount > 0
-              ? `+${failedCount} failed start${failedCount === 1 ? '' : 's'}`
+              ? `+${failedCount} auth timeout${failedCount === 1 ? '' : 's'}`
               : (applied.stationIds.length ? `${applied.stationIds.length} EVSE` : 'All EVSEs')}
           />
           <KPICard
@@ -615,14 +615,14 @@ function SessionRow({
       onClick={failed ? undefined : onSelect}
       className={failed ? 'bg-amber-50/60' : 'cursor-pointer'}
       title={failed
-        ? 'Charge attempt — connector went to Preparing but never started charging (no transaction). No meter data to chart.'
+        ? 'Driver plugged in and presented a card/app credential, but charging never started (no transaction). AutoCharge probes and casual plug/unplugs are excluded.'
         : 'Click to view session detail chart'}
     >
       <td className="font-mono text-xs">
         {failed ? (
           <div className="flex items-center gap-2">
             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 uppercase tracking-wide whitespace-nowrap">
-              Failed start
+              Auth timed out
             </span>
             <span>{s.start_dt}</span>
           </div>

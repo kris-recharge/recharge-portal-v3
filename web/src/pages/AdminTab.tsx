@@ -411,8 +411,8 @@ function PricingSection() {
   const { data: pricing   = [], isLoading } = useQuery({ queryKey: ['admin-pricing'], queryFn: fetchAdminPricing })
 
   const defaultForm = () => ({
-    id: '', station_id: '', connection_fee: '', price_per_kwh: '', price_per_min: '',
-    idle_fee_per_min: '', effective_start: nowAKLocal(), effective_end: '',
+    id: '', station_id: '', connection_fee: '', price_per_kwh: '', price_per_min: '0',
+    idle_fee_per_min: '0', effective_start: nowAKLocal(), effective_end: '',
     mode: 'create' as 'create' | 'update',
   })
   const [form, setForm] = useState(defaultForm)
@@ -527,10 +527,10 @@ function PricingSection() {
             <input className={inputCls} type="number" step="0.0001" min="0" placeholder="0.4500" value={form.price_per_kwh} onChange={e => setForm(f => ({ ...f, price_per_kwh: e.target.value }))} />
           </Field>
           <Field label="Price per minute ($/min)">
-            <input className={inputCls} type="number" step="0.0001" min="0" placeholder="optional" value={form.price_per_min} onChange={e => setForm(f => ({ ...f, price_per_min: e.target.value }))} />
+            <input className={inputCls} type="number" step="0.0001" min="0" placeholder="0.00" value={form.price_per_min} onChange={e => setForm(f => ({ ...f, price_per_min: e.target.value }))} />
           </Field>
           <Field label="Idle fee ($/min)">
-            <input className={inputCls} type="number" step="0.0001" min="0" placeholder="optional" value={form.idle_fee_per_min} onChange={e => setForm(f => ({ ...f, idle_fee_per_min: e.target.value }))} />
+            <input className={inputCls} type="number" step="0.0001" min="0" placeholder="0.00" value={form.idle_fee_per_min} onChange={e => setForm(f => ({ ...f, idle_fee_per_min: e.target.value }))} />
           </Field>
           <Field label="Effective Start (AK local) *">
             <input className={inputCls} type="datetime-local" value={form.effective_start} onChange={e => setForm(f => ({ ...f, effective_start: e.target.value }))} />

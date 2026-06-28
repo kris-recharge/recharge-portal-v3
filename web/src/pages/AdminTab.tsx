@@ -22,7 +22,7 @@ import {
 } from '../lib/api'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const PLATFORMS = ['', 'RTM', 'RT50', 'MaxiCharger', 'Autel', 'Other']
+const PLATFORMS = ['', 'RTM', 'RT50', 'MaxiCharger', 'HYC400', 'Autel', 'Other']
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
-import { fetchSessions, fetchAnalytics, ChargingSession, EVSE_OPTIONS } from '../lib/api'
+import { fetchSessions, fetchAnalytics, ChargingSession, fetchEvseOptions, EVSE_OPTIONS_FALLBACK } from '../lib/api'
 import { KPICard } from '../components/KPICard'
 import { SkeletonKPIRow, SkeletonTable } from '../components/Skeleton'
 import { SessionDetailModal } from '../components/SessionDetailModal'
@@ -74,6 +74,13 @@ interface SessionsTabProps {
 export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
+
+  // Live EVSE roster (reflects Admin-registered chargers); fallback while loading
+  const { data: EVSE_OPTIONS = EVSE_OPTIONS_FALLBACK } = useQuery({
+    queryKey: ['evse-options'],
+    queryFn:  fetchEvseOptions,
+    staleTime: 5 * 60_000,
+  })
 
   // Draft = UI controls; applied = what actually drives queries
   const [draft,   setDraft]   = useState<Filters>(DEFAULT_FILTERS)

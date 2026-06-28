@@ -260,15 +260,27 @@ export function fetchAnalytics(params?: {
   return apiFetch<AnalyticsResponse>(`/api/analytics?${qs}`)
 }
 
-// ── EVSE options (matches constants.py — shared between SessionsTab & ExportTab) ─
+// ── EVSE options (shared between SessionsTab & ExportTab) ───────────────────────
+// Fetched live from /api/evses so newly-onboarded chargers (registered via the
+// Admin tab) show up in the filter pills without a frontend redeploy. The static
+// list below is only an initial-render fallback while the request is in flight.
 
-export const EVSE_OPTIONS = [
+export interface EvseOption {
+  id: string
+  name: string
+  location: string
+}
+
+export const EVSE_OPTIONS_FALLBACK: EvseOption[] = [
   { id: 'as_c8rCuPHDd7sV1ynHBVBiq', name: 'ARG - Right',   location: 'ARG' },
   { id: 'as_cnIGqQ0DoWdFCo7zSrN01', name: 'ARG - Left',    location: 'ARG' },
   { id: 'as_oXoa7HXphUu5riXsSW253', name: 'Delta - Right', location: 'Delta Jct' },
   { id: 'as_xTUHfTKoOvKSfYZhhdlhT', name: 'Delta - Left',  location: 'Delta Jct' },
   { id: 'as_LYHe6mZTRKiFfziSNJFvJ', name: 'Glennallen',    location: 'Glennallen' },
 ]
+
+export const fetchEvseOptions = (): Promise<EvseOption[]> =>
+  apiFetch<EvseOption[]>('/api/evses')
 
 // ── Export ────────────────────────────────────────────────────────────────────
 

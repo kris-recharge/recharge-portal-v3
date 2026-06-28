@@ -56,6 +56,7 @@ PLATFORM_MAP: dict[str, str] = {
 MANUFACTURER_MAP: dict[str, str] = {
     "MaxiCharger": "Autel",
     "RTM":         "Tritium",
+    "HYC400":      "Alpitronic",   # HYC400 DC fast (connection-count-based cords)
 }
 
 # Delta Junction connector 1 changed CHAdeMO → NACS on 2026-01-30 (AKST)

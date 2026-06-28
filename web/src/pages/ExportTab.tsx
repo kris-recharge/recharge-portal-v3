@@ -5,7 +5,8 @@
  *  the maintenance export is EVSE-scoped server-side via portal_users. */
 
 import { useState, type ReactNode } from 'react'
-import { buildExportUrl, buildMaintenanceExportUrl, EVSE_OPTIONS } from '../lib/api'
+import { useQuery } from '@tanstack/react-query'
+import { buildExportUrl, buildMaintenanceExportUrl, fetchEvseOptions, EVSE_OPTIONS_FALLBACK } from '../lib/api'
 import { supabase } from '../lib/supabase'
 import { Download, Loader2 } from 'lucide-react'
 
@@ -45,6 +46,13 @@ function ExportCard({ title, initialFilters, carriedOver, buildUrl, filePrefix, 
   const [stationIds, setStationIds] = useState<string[]>(initialFilters?.stationIds ?? [])
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState<string | null>(null)
+
+  // Live EVSE roster (reflects Admin-registered chargers); fallback while loading
+  const { data: EVSE_OPTIONS = EVSE_OPTIONS_FALLBACK } = useQuery({
+    queryKey: ['evse-options'],
+    queryFn:  fetchEvseOptions,
+    staleTime: 5 * 60_000,
+  })
 
   function toggleEvse(id: string) {
     setStationIds(prev =>

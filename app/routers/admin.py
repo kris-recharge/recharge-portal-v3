@@ -174,6 +174,19 @@ async def list_pricing(_: AdminUser):
     return [dict(r) for r in rows]
 
 
+def _parse_ts(value: str | None) -> datetime | None:
+    """Parse an ISO8601 timestamp (e.g. '2026-06-28T11:38:00-09:00') into a
+    tz-aware datetime. asyncpg's timestamptz codec requires a datetime, not a
+    str — the ``::timestamptz`` cast in SQL doesn't make it accept strings.
+    Accepts a trailing 'Z' as UTC."""
+    if not value:
+        return None
+    s = value.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return datetime.fromisoformat(s)
+
+
 @router.post("/pricing", status_code=201)
 async def create_pricing(body: PricingCreate, _: AdminUser):
     async with acquire() as conn:
@@ -188,7 +201,7 @@ async def create_pricing(body: PricingCreate, _: AdminUser):
             """,
             body.station_id, body.connection_fee, body.price_per_kwh,
             body.price_per_min, body.idle_fee_per_min,
-            body.effective_start, body.effective_end,
+            _parse_ts(body.effective_start), _parse_ts(body.effective_end),
         )
     return dict(row)
 
@@ -200,8 +213,8 @@ async def update_pricing(pricing_id: str, body: PricingPatch, _: AdminUser):
     if body.price_per_kwh    is not None: fields["price_per_kwh"]    = body.price_per_kwh
     if body.price_per_min    is not None: fields["price_per_min"]    = body.price_per_min
     if body.idle_fee_per_min is not None: fields["idle_fee_per_min"] = body.idle_fee_per_min
-    if body.effective_start  is not None: fields["effective_start"]  = body.effective_start
-    if body.effective_end    is not None: fields["effective_end"]    = body.effective_end
+    if body.effective_start  is not None: fields["effective_start"]  = _parse_ts(body.effective_start)
+    if body.effective_end    is not None: fields["effective_end"]    = _parse_ts(body.effective_end)
 
     if not fields:
         raise HTTPException(400, "No fields to update")

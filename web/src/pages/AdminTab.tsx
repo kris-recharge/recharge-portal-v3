@@ -22,7 +22,6 @@ import {
 } from '../lib/api'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const PLATFORMS = ['', 'RTM', 'RT50', 'MaxiCharger', 'HYC400', 'Autel', 'Other']
 const CONNECTOR_OPTIONS = ['CHAdeMO', 'NACS', 'CCS']
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -113,7 +112,7 @@ function EvseSection() {
   const { data: evseList  = [], isLoading: loadingEvse }  = useQuery({ queryKey: ['admin-evse'], queryFn: fetchAdminEvse })
   const { data: unidList  = [], isLoading: loadingUnid, refetch: refetchUnid }  = useQuery({ queryKey: ['admin-unidentified'], queryFn: fetchAdminUnidentifiedEvse })
 
-  const [form, setForm] = useState({ station_id: '', display_name: '', location: '', platform: '', archived: false })
+  const [form, setForm] = useState({ station_id: '', display_name: '', location: '', archived: false })
   const [status, setStatus] = useState({ ok: true, msg: '' })
 
   const upsert = useMutation({
@@ -121,13 +120,13 @@ function EvseSection() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-evse'] })
       setStatus({ ok: true, msg: 'Saved.' })
-      setForm({ station_id: '', display_name: '', location: '', platform: '', archived: false })
+      setForm({ station_id: '', display_name: '', location: '', archived: false })
     },
     onError: (e: Error) => setStatus({ ok: false, msg: e.message }),
   })
 
   function prefill(row: AdminEvse) {
-    setForm({ station_id: row.station_id, display_name: row.display_name, location: row.location, platform: row.platform, archived: row.archived })
+    setForm({ station_id: row.station_id, display_name: row.display_name, location: row.location, archived: row.archived })
     setStatus({ ok: true, msg: '' })
   }
 
@@ -206,9 +205,13 @@ function EvseSection() {
         )}
       </div>
 
-      {/* Add / Update form */}
+      {/* Add / Update form — quick dashboard fields only */}
       <div className="border border-gray-200 rounded-xl p-4 space-y-3">
         <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Add / Update EVSE</h3>
+        <p className="text-xs text-gray-400">
+          Quick edit for dashboard fields. For full unit detail (serial, type, connectors, warranty) use
+          the Add/Edit form under <span className="font-medium">Fleet Management — Active Units</span>.
+        </p>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Station ID *">
             <input className={inputCls} placeholder="as_LYHe6m…" value={form.station_id} onChange={e => setForm(f => ({ ...f, station_id: e.target.value }))} />
@@ -218,11 +221,6 @@ function EvseSection() {
           </Field>
           <Field label="Location">
             <input className={inputCls} placeholder="Glennallen" value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} />
-          </Field>
-          <Field label="Platform">
-            <select className={selectCls} value={form.platform} onChange={e => setForm(f => ({ ...f, platform: e.target.value }))}>
-              {PLATFORMS.map(p => <option key={p} value={p}>{p || '— select —'}</option>)}
-            </select>
           </Field>
         </div>
         <label className="flex items-center gap-2 text-sm text-gray-600">
@@ -1536,7 +1534,7 @@ export function AdminTab() {
   return (
     <div className="space-y-4 max-w-5xl">
       <p className="text-xs text-gray-400">
-        Admin panel — changes to EVSEs write to <code>runtime_overrides.json</code>; user and pricing changes go directly to Supabase.
+        Admin panel — all changes (EVSEs, users, pricing) write directly to Supabase.
       </p>
 
       <Section title="EVSE & Locations">

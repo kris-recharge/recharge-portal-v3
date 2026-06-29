@@ -31,8 +31,5 @@ web/.vite/
 # ── Claude Code ───────────────────────────────────────────────────────────────
 .claude/
 
-# ── Runtime overrides (local dev only — VPS has its own) ──────────────────────
-app/runtime_overrides.json
-
 # ── Logs ─────────────────────────────────────────────────────────────────────
 *.log

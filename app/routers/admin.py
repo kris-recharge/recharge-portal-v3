@@ -5,8 +5,6 @@ Only accessible to kris.hall@rechargealaska.net (or dev bypass).
 
 from __future__ import annotations
 
-import json
-import stat
 from datetime import datetime, timezone
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
@@ -14,10 +12,10 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from .. import registry
 from ..auth import CurrentUser, PortalUser
 from ..config import DEV_BYPASS_AUTH
 from ..constants import (
-    OVERRIDES_PATH,
     get_evse_display,
     get_evse_location,
     get_platform_map,
@@ -29,7 +27,6 @@ from ..db import acquire
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 ADMIN_EMAIL = "kris.hall@rechargealaska.net"
-_OVR_PATH   = OVERRIDES_PATH   # single source of truth (env-configurable, volume-mounted in prod)
 _AK         = ZoneInfo("America/Anchorage")
 
 
@@ -41,24 +38,6 @@ async def _require_admin(user: CurrentUser) -> PortalUser:
     return user
 
 AdminUser = Annotated[PortalUser, Depends(_require_admin)]
-
-
-# ── Override file helpers ─────────────────────────────────────────────────────
-
-def _read_overrides() -> dict:
-    try:
-        return json.loads(_OVR_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _write_overrides(obj: dict) -> None:
-    _OVR_PATH.parent.mkdir(parents=True, exist_ok=True)   # mounted volume dir may be empty on first write
-    _OVR_PATH.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
-    try:
-        _OVR_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
-    except Exception:
-        pass
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -102,7 +81,6 @@ class EvseUpsert(BaseModel):
     station_id: str
     display_name: str = ""
     location: str = ""
-    platform: str = ""
     archived: bool = False
 
 
@@ -290,36 +268,21 @@ async def list_unidentified_evse(_: AdminUser):
 
 @router.put("/evse")
 async def upsert_evse(body: EvseUpsert, _: AdminUser):
-    """Write EVSE metadata to runtime_overrides.json AND public.chargers / public.sites."""
+    """Quick editor for an EVSE's dashboard fields (display name, location, archive).
+
+    Writes directly to public.chargers / public.sites — the single source of
+    truth. For full unit detail (serial, unit type, connectors, …) use the
+    comprehensive Add/Edit EVSE form in Fleet Management.
+    """
     sid = body.station_id.strip()
     if not sid:
         raise HTTPException(400, "station_id is required")
 
-    # ── 1. Update runtime_overrides.json (immediate in-process effect) ─────────
-    ov     = _read_overrides()
-    ev_map = ov.get("evse_display",           {})
-    lo_map = ov.get("evse_location",          {})
-    pf_map = ov.get("platform_map",           {})
-    ar_set = set(ov.get("archived_station_ids", []))
+    # Archive maps to charger status (the dashboard hides non-active EVSEs).
+    new_status = "retired" if body.archived else "active"
 
-    if body.display_name: ev_map[sid] = body.display_name
-    if body.location:     lo_map[sid] = body.location
-    if body.platform:     pf_map[sid] = body.platform
-
-    if body.archived:
-        ar_set.add(sid)
-    else:
-        ar_set.discard(sid)
-
-    ov["evse_display"]         = ev_map
-    ov["evse_location"]        = lo_map
-    ov["platform_map"]         = pf_map
-    ov["archived_station_ids"] = sorted(ar_set)
-    _write_overrides(ov)
-
-    # ── 2. Write to public.chargers + public.sites in Supabase ────────────────
     async with acquire() as conn:
-        # Find or create site by location name
+        # Find or create the site by location name.
         site_id: str | None = None
         if body.location:
             row = await conn.fetchrow(
@@ -335,41 +298,32 @@ async def upsert_evse(body: EvseUpsert, _: AdminUser):
                 )
                 site_id = row["id"] if row else None
 
-        # Check if charger already exists (match on external_id)
         existing = await conn.fetchrow(
-            "SELECT id::text FROM chargers WHERE external_id = $1 LIMIT 1",
-            sid,
+            "SELECT id::text FROM chargers WHERE external_id = $1 LIMIT 1", sid,
         )
 
         if existing:
-            # Build dynamic UPDATE — only set non-empty fields
             sets: list[str] = ["updated_at = NOW()"]
-            vals: list      = []
+            vals: list[Any] = []
             idx = 1
-
             if body.display_name:
-                sets.append(f"name = ${idx}"); vals.append(body.display_name); idx += 1
+                sets.append(f"display_name = ${idx}"); vals.append(body.display_name); idx += 1
             if site_id:
                 sets.append(f"site_id = ${idx}::uuid"); vals.append(site_id); idx += 1
-            if body.platform:
-                sets.append(f"make = ${idx}"); vals.append(body.platform); idx += 1
-
-            if len(sets) > 1:  # something beyond just updated_at
-                await conn.execute(
-                    f"UPDATE chargers SET {', '.join(sets)} WHERE external_id = ${idx}",
-                    *vals, sid,
-                )
+            sets.append(f"status = ${idx}"); vals.append(new_status); idx += 1
+            await conn.execute(
+                f"UPDATE chargers SET {', '.join(sets)} WHERE external_id = ${idx}",
+                *vals, sid,
+            )
         else:
-            # INSERT new charger
+            # Register a stub row — the Fleet form can fill in serial/type later.
             await conn.execute(
                 """
-                INSERT INTO chargers (external_id, name, site_id, make, connector_types)
-                VALUES ($1, $2, $3::uuid, $4, '{}'::jsonb)
+                INSERT INTO chargers (external_id, name, display_name, site_id, status, connector_types)
+                VALUES ($1, $2, $3, $4::uuid, $5, '{}'::jsonb)
                 """,
-                sid,
-                body.display_name or sid,
-                site_id,
-                body.platform or None,
+                sid, body.display_name or sid, body.display_name or sid, site_id, new_status,
             )
 
+    registry.refresh()
     return {"ok": True, "station_id": sid}

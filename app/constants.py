@@ -3,16 +3,12 @@
 The Supabase ``chargers`` table (via ``registry``) is the source of truth for the
 EVSE roster, display names, locations, connector types, and manufacturer. The
 hard-coded maps below are a cold-start / DB-unreachable fallback only, so the
-dashboard never goes blank. ``runtime_overrides.json`` is layered on top during
-the migration window and will be retired once the write path moves to the table.
+dashboard never goes blank.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from datetime import date, datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import registry
@@ -70,75 +66,42 @@ _DELTA_STATIONS       = {"as_oXoa7HXphUu5riXsSW253", "as_xTUHfTKoOvKSfYZhhdlhT"}
 _DELTA_CONN1_CUTOFF   = date(2026, 1, 30)
 _AK_TZ                = ZoneInfo("America/Anchorage")
 
-# ── Runtime overrides ─────────────────────────────────────────────────────────
-
-# Admin-tab registrations (new EVSEs, renames, archived flags, …) are written
-# here. In Docker this MUST point at a mounted volume — otherwise a container
-# rebuild wipes the file and every override reverts to the hardcoded defaults.
-# Set RUNTIME_OVERRIDES_PATH in production; defaults next to the source for local dev.
-OVERRIDES_PATH = Path(
-    os.getenv("RUNTIME_OVERRIDES_PATH", Path(__file__).with_name("runtime_overrides.json"))
-)
-_OVR_PATH = OVERRIDES_PATH
-
-
-def _load_overrides() -> dict:
-    try:
-        return json.loads(_OVR_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
 # ── Public accessors ──────────────────────────────────────────────────────────
 #
 # Source of truth is the Supabase ``chargers`` table via ``registry``. The
-# hardcoded maps above are a cold-start / DB-down fallback only. ``runtime_overrides.json``
-# is layered on top during the migration window (retired in a later phase).
+# hardcoded maps above are a cold-start / DB-unreachable fallback only, so the
+# dashboard never goes blank.
 
 def get_evse_display() -> dict[str, str]:
     snap = registry.get_snapshot()
-    out = dict(snap.evse_display) if snap else dict(EVSE_DISPLAY)
-    out.update(_load_overrides().get("evse_display", {}))
-    return out
+    return dict(snap.evse_display) if snap else dict(EVSE_DISPLAY)
 
 
 def get_evse_location() -> dict[str, str]:
     snap = registry.get_snapshot()
-    out = dict(snap.evse_location) if snap else dict(EVSE_LOCATION)
-    out.update(_load_overrides().get("evse_location", {}))
-    return out
+    return dict(snap.evse_location) if snap else dict(EVSE_LOCATION)
 
 
 def get_connector_type() -> dict[tuple[str, int], str]:
     snap = registry.get_snapshot()
-    out = dict(snap.connector_type) if snap else dict(CONNECTOR_TYPE)
-    out.update(_load_overrides().get("connector_type", {}))
-    return out
+    return dict(snap.connector_type) if snap else dict(CONNECTOR_TYPE)
 
 
 def get_platform_map() -> dict[str, str]:
     snap = registry.get_snapshot()
-    out = dict(snap.platform) if snap else dict(PLATFORM_MAP)
-    out.update(_load_overrides().get("platform_map", {}))
-    return out
+    return dict(snap.platform) if snap else dict(PLATFORM_MAP)
 
 
 def get_manufacturer_map() -> dict[str, str]:
-    out = dict(MANUFACTURER_MAP)
-    out.update(_load_overrides().get("manufacturer_map", {}))
-    return out
+    return dict(MANUFACTURER_MAP)
 
 
 def manufacturer_for(station_id: str) -> str:
     """Hardware manufacturer for a station (drives the Connector Count cord strategy).
 
-    Sourced from the station's unit type in the ``chargers`` table. A per-station
-    JSON ``manufacturer`` override still wins; the hardcoded platform→manufacturer
-    map is the final fallback when the DB is unreachable.
+    Sourced from the station's unit type in the ``chargers`` table; the hardcoded
+    platform→manufacturer map is the fallback when the DB is unreachable.
     """
-    ovr = _load_overrides().get("manufacturer", {})
-    if station_id in ovr:
-        return ovr[station_id]
     snap = registry.get_snapshot()
     if snap and station_id in snap.manufacturer:
         return snap.manufacturer[station_id]
@@ -148,9 +111,7 @@ def manufacturer_for(station_id: str) -> str:
 
 def get_archived_station_ids() -> list[str]:
     snap = registry.get_snapshot()
-    ids = set(snap.archived_ids) if snap else set()
-    ids.update(_load_overrides().get("archived_station_ids", []))
-    return sorted(ids)
+    return list(snap.archived_ids) if snap else []
 
 
 def get_all_station_ids() -> list[str]:

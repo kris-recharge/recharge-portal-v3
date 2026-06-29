@@ -15,15 +15,8 @@ services:
     container_name: rca_api_v3
     restart: unless-stopped
     env_file: .env
-    environment:
-      # Persist Admin-tab EVSE registrations/overrides outside the container so a
-      # rebuild doesn't wipe them (see volume below). Without this they live only
-      # in the container's writable layer and vanish on `compose down`/rebuild.
-      RUNTIME_OVERRIDES_PATH: /data/runtime_overrides.json
     ports:
       - "127.0.0.1:8001:8000"   # host Caddy proxies to localhost:8001
-    volumes:
-      - /srv/rca-data:/data     # host-side persistent store; survives rebuilds and `down -v`
     networks:
       - rca_net_v3
 

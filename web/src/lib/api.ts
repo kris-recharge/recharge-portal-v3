@@ -450,7 +450,7 @@ export const fetchAdminUnidentifiedEvse = (): Promise<AdminUnidentifiedEvse[]> =
 
 export const upsertAdminEvse = (body: {
   station_id: string; display_name?: string; location?: string
-  platform?: string; archived?: boolean
+  archived?: boolean
 }): Promise<{ ok: boolean; station_id: string }> =>
   apiFetch('/api/admin/evse', { method: 'PUT', body: JSON.stringify(body) })
 

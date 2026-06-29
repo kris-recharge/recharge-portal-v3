@@ -138,7 +138,7 @@ async def export_sessions(
                   -- in full (not truncated); the outer WHERE drops later starts.
                   AND m.ts <= $3::timestamptz + INTERVAL '1 day'
                 GROUP BY m.station_id, m.connector_id, m.transaction_id
-            )
+            ),
             with_auth AS (
                 SELECT
                     s.*,
@@ -444,8 +444,8 @@ async def export_sessions(
             dur_min,
             _pct(soc_start_val),
             _pct(soc_end_val),
-            r["auth_tag"] or "",                        # M — Authentication (raw tag)
-            _auth_method(r["auth_tag"] or ""),          # N — Authentication Method
+            r["auth_tag"] or "",                                    # M — Authentication (raw tag)
+            "" if is_failed else _auth_method(r["auth_tag"] or ""), # N — Authentication Method
             est_rev,                                    # O — Est. Revenue
             r["vid_tag"] or "",                         # P — VID (VID:-prefixed only)
         ])

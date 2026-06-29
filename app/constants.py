@@ -1,7 +1,10 @@
-"""EVSE metadata constants — ported directly from v2 constants.py.
+"""EVSE metadata accessors.
 
-Hard-coded maps are the source of truth; DB chargers table adds new EVSEs
-dynamically without a redeploy.
+The Supabase ``chargers`` table (via ``registry``) is the source of truth for the
+EVSE roster, display names, locations, connector types, and manufacturer. The
+hard-coded maps below are a cold-start / DB-unreachable fallback only, so the
+dashboard never goes blank. ``runtime_overrides.json`` is layered on top during
+the migration window and will be retired once the write path moves to the table.
 """
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ import os
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from . import registry
 
 # ── Static maps ───────────────────────────────────────────────────────────────
 
@@ -85,27 +90,35 @@ def _load_overrides() -> dict:
 
 
 # ── Public accessors ──────────────────────────────────────────────────────────
+#
+# Source of truth is the Supabase ``chargers`` table via ``registry``. The
+# hardcoded maps above are a cold-start / DB-down fallback only. ``runtime_overrides.json``
+# is layered on top during the migration window (retired in a later phase).
 
 def get_evse_display() -> dict[str, str]:
-    out = dict(EVSE_DISPLAY)
+    snap = registry.get_snapshot()
+    out = dict(snap.evse_display) if snap else dict(EVSE_DISPLAY)
     out.update(_load_overrides().get("evse_display", {}))
     return out
 
 
 def get_evse_location() -> dict[str, str]:
-    out = dict(EVSE_LOCATION)
+    snap = registry.get_snapshot()
+    out = dict(snap.evse_location) if snap else dict(EVSE_LOCATION)
     out.update(_load_overrides().get("evse_location", {}))
     return out
 
 
 def get_connector_type() -> dict[tuple[str, int], str]:
-    out = dict(CONNECTOR_TYPE)
+    snap = registry.get_snapshot()
+    out = dict(snap.connector_type) if snap else dict(CONNECTOR_TYPE)
     out.update(_load_overrides().get("connector_type", {}))
     return out
 
 
 def get_platform_map() -> dict[str, str]:
-    out = dict(PLATFORM_MAP)
+    snap = registry.get_snapshot()
+    out = dict(snap.platform) if snap else dict(PLATFORM_MAP)
     out.update(_load_overrides().get("platform_map", {}))
     return out
 
@@ -117,20 +130,27 @@ def get_manufacturer_map() -> dict[str, str]:
 
 
 def manufacturer_for(station_id: str) -> str:
-    """Hardware manufacturer for a station, derived from its platform.
+    """Hardware manufacturer for a station (drives the Connector Count cord strategy).
 
-    A per-station ``manufacturer`` override wins over the platform mapping so a
-    one-off unit can be corrected without touching the platform map.
+    Sourced from the station's unit type in the ``chargers`` table. A per-station
+    JSON ``manufacturer`` override still wins; the hardcoded platform→manufacturer
+    map is the final fallback when the DB is unreachable.
     """
     ovr = _load_overrides().get("manufacturer", {})
     if station_id in ovr:
         return ovr[station_id]
+    snap = registry.get_snapshot()
+    if snap and station_id in snap.manufacturer:
+        return snap.manufacturer[station_id]
     platform = get_platform_map().get(station_id, "")
     return get_manufacturer_map().get(platform, "")
 
 
 def get_archived_station_ids() -> list[str]:
-    return list(_load_overrides().get("archived_station_ids", []))
+    snap = registry.get_snapshot()
+    ids = set(snap.archived_ids) if snap else set()
+    ids.update(_load_overrides().get("archived_station_ids", []))
+    return sorted(ids)
 
 
 def get_all_station_ids() -> list[str]:
@@ -160,7 +180,7 @@ def connector_type_for(station_id: str, connector_id: int, session_start_utc=Non
                 dt = session_start_utc
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-            if dt.astimezone(_AK_TZ).date() < _DELTA_CONN1_CUTOVER:
+            if dt.astimezone(_AK_TZ).date() < _DELTA_CONN1_CUTOFF:
                 return "CHAdeMO"
             return "NACS"
         except Exception:

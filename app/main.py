@@ -1210,6 +1210,42 @@ SET task_description =
       'LOTO REQUIRED — fully de-energize charger before opening cabinet.'
 WHERE id = 'ffffffff-0008-0000-0000-000000000017'
   AND task_description NOT LIKE '%20 Nm%';
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- v3.2: EVSE registry consolidation — make public.chargers the single source of
+-- truth for the dashboard (display name, connector types, manufacturer/platform).
+-- Previously these lived in app/constants.py + runtime_overrides.json (a VPS file
+-- that a container rebuild wiped). All backfills below are guarded to fill blanks
+-- ONLY, so they run once and never clobber later Admin-tab edits on restart.
+-- ══════════════════════════════════════════════════════════════════════════════
+
+-- Dashboard display name, separate from chargers.name (which Fleet/Maintenance uses).
+ALTER TABLE chargers ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+-- Backfill operational display names for the 5 legacy units (was EVSE_DISPLAY).
+UPDATE chargers SET display_name = 'ARG - Left'    WHERE external_id = 'as_cnIGqQ0DoWdFCo7zSrN01' AND display_name IS NULL;
+UPDATE chargers SET display_name = 'ARG - Right'   WHERE external_id = 'as_c8rCuPHDd7sV1ynHBVBiq' AND display_name IS NULL;
+UPDATE chargers SET display_name = 'Delta - Left'  WHERE external_id = 'as_xTUHfTKoOvKSfYZhhdlhT' AND display_name IS NULL;
+UPDATE chargers SET display_name = 'Delta - Right' WHERE external_id = 'as_oXoa7HXphUu5riXsSW253' AND display_name IS NULL;
+UPDATE chargers SET display_name = 'Glennallen'    WHERE external_id = 'as_LYHe6mZTRKiFfziSNJFvJ' AND display_name IS NULL;
+-- Everything else (CL-A/B/C, future units) falls back to its Fleet name.
+UPDATE chargers SET display_name = name WHERE display_name IS NULL AND name IS NOT NULL;
+
+-- Per-port connector types (was CONNECTOR_TYPE). Delta conn 1's historical
+-- CHAdeMO→NACS change (2026-01-30) stays a code special-case in constants.py;
+-- the table holds the current state.
+UPDATE chargers SET connector_types = '{"1":"CCS","2":"CCS"}'::jsonb
+  WHERE external_id = 'as_c8rCuPHDd7sV1ynHBVBiq'  AND (connector_types IS NULL OR connector_types = '{}'::jsonb);
+UPDATE chargers SET connector_types = '{"1":"NACS","2":"CCS"}'::jsonb
+  WHERE external_id IN ('as_cnIGqQ0DoWdFCo7zSrN01','as_LYHe6mZTRKiFfziSNJFvJ','as_oXoa7HXphUu5riXsSW253','as_xTUHfTKoOvKSfYZhhdlhT')
+    AND (connector_types IS NULL OR connector_types = '{}'::jsonb);
+
+-- CL-A/B/C are Alpitronic HYC400s — assign the unit type so the dashboard derives
+-- manufacturer (and Fleet shows a Type instead of "—").
+UPDATE chargers
+  SET unit_type_id = (SELECT id FROM unit_types WHERE type_name = 'Alpitronics HYC_400UL' LIMIT 1)
+  WHERE external_id IN ('as_DFszjoLCWkAmXd1a6S9aZ','as_Qd90MUEn4nq8AlS5OOYIS','as_w5M5mKhbjW6Guw5dItpTz')
+    AND unit_type_id IS NULL;
 """
 
 

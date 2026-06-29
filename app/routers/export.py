@@ -185,10 +185,26 @@ async def export_sessions(
                 oe.action_payload->>'errorCode'       AS error_code,
                 oe.action_payload->>'vendorErrorCode' AS vendor_error_code,
                 oe.action_payload->>'status'          AS status,
-                tec.description                       AS vendor_description
+                -- Vendor description scoped to manufacturer: Tritium units use
+                -- tritium_error_codes, Alpitronic (HYC400) use alpitronic_error_codes.
+                CASE
+                    WHEN ut.manufacturer = 'Tritium'    THEN tec.description
+                    WHEN ut.manufacturer = 'Alpitronic' THEN aec.description
+                    ELSE NULL
+                END                                   AS vendor_description
             FROM ocpp_events oe
+            LEFT JOIN chargers c    ON c.external_id = oe.asset_id
+            LEFT JOIN unit_types ut ON ut.id = c.unit_type_id
             LEFT JOIN tritium_error_codes tec
-                ON tec.code = (
+                ON ut.manufacturer = 'Tritium'
+               AND tec.code = (
+                    CASE WHEN oe.action_payload->>'vendorErrorCode' ~ '^[0-9]+$'
+                         THEN (oe.action_payload->>'vendorErrorCode')::integer
+                    END
+                )
+            LEFT JOIN alpitronic_error_codes aec
+                ON ut.manufacturer = 'Alpitronic'
+               AND aec.error_code = (
                     CASE WHEN oe.action_payload->>'vendorErrorCode' ~ '^[0-9]+$'
                          THEN (oe.action_payload->>'vendorErrorCode')::integer
                     END

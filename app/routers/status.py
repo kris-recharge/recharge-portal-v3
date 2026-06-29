@@ -46,15 +46,25 @@ async def get_status_history(
                 (e.action_payload->>'status')                       AS status,
                 (e.action_payload->>'errorCode')                    AS error_code,
                 (e.action_payload->>'vendorErrorCode')              AS vendor_error_code,
+                -- Vendor error description, scoped to the station's manufacturer:
+                -- Tritium units -> tritium_error_codes, Alpitronic (HYC400) ->
+                -- alpitronic_error_codes. Other makes resolve to NULL.
                 CASE
-                    WHEN (e.action_payload->>'vendorErrorCode') ~ '^\d+$'
-                    THEN (SELECT t.description FROM tritium_error_codes t
-                          WHERE t.code = (e.action_payload->>'vendorErrorCode')::integer
-                          LIMIT 1)
+                    WHEN (e.action_payload->>'vendorErrorCode') !~ '^\d+$' THEN NULL
+                    WHEN ut.manufacturer = 'Tritium'
+                        THEN (SELECT t.description FROM tritium_error_codes t
+                              WHERE t.code = (e.action_payload->>'vendorErrorCode')::integer
+                              LIMIT 1)
+                    WHEN ut.manufacturer = 'Alpitronic'
+                        THEN (SELECT a.description FROM alpitronic_error_codes a
+                              WHERE a.error_code = (e.action_payload->>'vendorErrorCode')::integer
+                              LIMIT 1)
                     ELSE NULL
                 END                                                 AS vendor_error_description,
                 COUNT(*) OVER()                                     AS total_count
             FROM ocpp_events e
+            LEFT JOIN chargers c    ON c.external_id = e.asset_id
+            LEFT JOIN unit_types ut ON ut.id = c.unit_type_id
             WHERE e.action = 'StatusNotification'
               AND e.asset_id = ANY($1::text[])
               AND ($2 OR (e.action_payload->>'errorCode') != 'NoError')

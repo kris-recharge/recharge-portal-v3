@@ -7,6 +7,7 @@ dynamically without a redeploy.
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -66,7 +67,14 @@ _AK_TZ                = ZoneInfo("America/Anchorage")
 
 # ── Runtime overrides ─────────────────────────────────────────────────────────
 
-_OVR_PATH = Path(__file__).with_name("runtime_overrides.json")
+# Admin-tab registrations (new EVSEs, renames, archived flags, …) are written
+# here. In Docker this MUST point at a mounted volume — otherwise a container
+# rebuild wipes the file and every override reverts to the hardcoded defaults.
+# Set RUNTIME_OVERRIDES_PATH in production; defaults next to the source for local dev.
+OVERRIDES_PATH = Path(
+    os.getenv("RUNTIME_OVERRIDES_PATH", Path(__file__).with_name("runtime_overrides.json"))
+)
+_OVR_PATH = OVERRIDES_PATH
 
 
 def _load_overrides() -> dict:

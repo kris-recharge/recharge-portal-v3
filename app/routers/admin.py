@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import stat
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
@@ -18,6 +17,7 @@ from pydantic import BaseModel
 from ..auth import CurrentUser, PortalUser
 from ..config import DEV_BYPASS_AUTH
 from ..constants import (
+    OVERRIDES_PATH,
     get_evse_display,
     get_evse_location,
     get_platform_map,
@@ -29,7 +29,7 @@ from ..db import acquire
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 ADMIN_EMAIL = "kris.hall@rechargealaska.net"
-_OVR_PATH   = Path(__file__).parent.parent / "runtime_overrides.json"
+_OVR_PATH   = OVERRIDES_PATH   # single source of truth (env-configurable, volume-mounted in prod)
 _AK         = ZoneInfo("America/Anchorage")
 
 
@@ -53,6 +53,7 @@ def _read_overrides() -> dict:
 
 
 def _write_overrides(obj: dict) -> None:
+    _OVR_PATH.parent.mkdir(parents=True, exist_ok=True)   # mounted volume dir may be empty on first write
     _OVR_PATH.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
     try:
         _OVR_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)

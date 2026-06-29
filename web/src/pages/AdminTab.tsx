@@ -9,7 +9,7 @@ import { ChevronDown, ChevronUp, RefreshCw, CheckCircle, AlertCircle } from 'luc
 import {
   fetchAdminUsers,    createAdminUser,    updateAdminUser,
   fetchAdminPricing,  createAdminPricing, updateAdminPricing,
-  fetchAdminEvse,     fetchAdminUnidentifiedEvse, upsertAdminEvse,
+  fetchAdminEvse,     fetchAdminUnidentifiedEvse,
   fetchUtilityAccounts, createUtilityAccount, updateUtilityAccount, deleteUtilityAccount,
   fetchUtilityCredentials, upsertUtilityCredentials, triggerUtilityCollect,
   fetchFleetUnitTypes, createFleetUnitType, updateFleetUnitType,
@@ -109,34 +109,45 @@ function StatusMsg({ ok, msg }: { ok: boolean; msg: string }) {
 
 function EvseSection() {
   const qc = useQueryClient()
-  const { data: evseList  = [], isLoading: loadingEvse }  = useQuery({ queryKey: ['admin-evse'], queryFn: fetchAdminEvse })
   const { data: unidList  = [], isLoading: loadingUnid, refetch: refetchUnid }  = useQuery({ queryKey: ['admin-unidentified'], queryFn: fetchAdminUnidentifiedEvse })
-
-  const [form, setForm] = useState({ station_id: '', display_name: '', location: '', archived: false })
-  const [status, setStatus] = useState({ ok: true, msg: '' })
-
-  const upsert = useMutation({
-    mutationFn: upsertAdminEvse,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['admin-evse'] })
-      setStatus({ ok: true, msg: 'Saved.' })
-      setForm({ station_id: '', display_name: '', location: '', archived: false })
-    },
-    onError: (e: Error) => setStatus({ ok: false, msg: e.message }),
+  // Full chargers detail (incl. retired) — backs both the registered list and edit pre-fill.
+  const { data: overview, isLoading: loadingUnits } = useQuery({
+    queryKey: ['maintenance-overview-admin'],
+    queryFn: () => fetchMaintenanceOverview(true),
   })
+  const units = overview?.chargers ?? []
 
-  function prefill(row: AdminEvse) {
-    setForm({ station_id: row.station_id, display_name: row.display_name, location: row.location, archived: row.archived })
-    setStatus({ ok: true, msg: '' })
-  }
+  // Form lifecycle: editing an existing unit, or adding (optionally pre-filled).
+  const [editUnit, setEditUnit] = useState<MaintenanceUnit | null>(null)
+  const [adding, setAdding]     = useState(false)
+  const [addExtId, setAddExtId] = useState('')
 
-  function prefillUnid(sid: string) {
-    setForm(f => ({ ...f, station_id: sid }))
-    setStatus({ ok: true, msg: '' })
+  function done() {
+    setEditUnit(null); setAdding(false); setAddExtId('')
+    qc.invalidateQueries({ queryKey: ['maintenance-overview-admin'] })
+    qc.invalidateQueries({ queryKey: ['maintenance-overview'] })
+    qc.invalidateQueries({ queryKey: ['admin-evse'] })
+    qc.invalidateQueries({ queryKey: ['admin-unidentified'] })
   }
+  function cancel() { setEditUnit(null); setAdding(false); setAddExtId('') }
+  function startAdd(extId = '') { setEditUnit(null); setAddExtId(extId); setAdding(true) }
+  function startEditUnit(u: MaintenanceUnit) { setAdding(false); setEditUnit(u) }
 
   return (
     <>
+      {/* Add / Edit EVSE form (the primary form) */}
+      <div>
+        {editUnit ? (
+          <OnboardUnitForm key={editUnit.id} editUnit={editUnit} onCreated={done} onCancel={cancel} />
+        ) : adding ? (
+          <OnboardUnitForm key={`add-${addExtId}`} prefillExternalId={addExtId} defaultOpen onCreated={done} onCancel={cancel} />
+        ) : (
+          <button onClick={() => startAdd()} className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded font-medium hover:bg-blue-700">
+            + Add EVSE
+          </button>
+        )}
+      </div>
+
       {/* Unidentified */}
       <div>
         <div className="flex items-center justify-between mb-2">
@@ -164,7 +175,7 @@ function EvseSection() {
                   <td className="px-3 py-2 font-mono text-gray-700">{r.station_id}</td>
                   <td className="px-3 py-2 text-gray-500">{r.last_seen_ak}</td>
                   <td className="px-3 py-2">
-                    <button onClick={() => prefillUnid(r.station_id)} className={btnGreen}>Register</button>
+                    <button onClick={() => startAdd(r.station_id)} className={btnGreen}>Register</button>
                   </td>
                 </tr>
               ))}
@@ -173,66 +184,38 @@ function EvseSection() {
         )}
       </div>
 
-      {/* Registered table */}
+      {/* Registered table — backed by the chargers detail */}
       <div>
         <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Registered EVSEs</h3>
-        {loadingEvse ? (
+        {loadingUnits ? (
           <div className="h-24 bg-gray-100 rounded animate-pulse" />
         ) : (
           <table className="w-full text-xs border border-gray-200 rounded-lg overflow-hidden">
             <thead className="bg-gray-50">
               <tr>
-                {['Station ID', 'Display Name', 'Location', 'Platform', 'Archived', ''].map(h => (
+                {['Station ID', 'Display Name', 'Location', 'Type', 'Status', ''].map(h => (
                   <th key={h} className="px-3 py-2 text-left font-medium text-gray-500">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {evseList.map((r: AdminEvse) => (
-                <tr key={r.station_id} className="border-t border-gray-100 hover:bg-gray-50">
-                  <td className="px-3 py-2 font-mono text-gray-600">{r.station_id}</td>
-                  <td className="px-3 py-2 font-medium">{r.display_name}</td>
-                  <td className="px-3 py-2 text-gray-500">{r.location}</td>
-                  <td className="px-3 py-2 text-gray-500">{r.platform}</td>
-                  <td className="px-3 py-2">{r.archived ? <span className="text-orange-500">Yes</span> : <span className="text-gray-400">No</span>}</td>
+              {units.map(u => (
+                <tr key={u.id} className="border-t border-gray-100 hover:bg-gray-50">
+                  <td className="px-3 py-2 font-mono text-gray-600">{u.external_id ?? '—'}</td>
+                  <td className="px-3 py-2 font-medium">{u.display_name ?? u.name}</td>
+                  <td className="px-3 py-2 text-gray-500">{u.site_name ?? '—'}</td>
+                  <td className="px-3 py-2 text-gray-500">{u.unit_type_name ?? '—'}</td>
+                  <td className="px-3 py-2">{u.status === 'active'
+                    ? <span className="text-gray-400">Active</span>
+                    : <span className="text-orange-500">{u.status}</span>}</td>
                   <td className="px-3 py-2">
-                    <button onClick={() => prefill(r)} className={btnSecondary + ' text-xs px-2 py-1'}>Edit</button>
+                    <button onClick={() => startEditUnit(u)} className={btnSecondary + ' text-xs px-2 py-1'}>Edit</button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-      </div>
-
-      {/* Add / Update form — quick dashboard fields only */}
-      <div className="border border-gray-200 rounded-xl p-4 space-y-3">
-        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Add / Update EVSE</h3>
-        <p className="text-xs text-gray-400">
-          Quick edit for dashboard fields. For full unit detail (serial, type, connectors, warranty) use
-          the Add/Edit form under <span className="font-medium">Fleet Management — Active Units</span>.
-        </p>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Station ID *">
-            <input className={inputCls} placeholder="as_LYHe6m…" value={form.station_id} onChange={e => setForm(f => ({ ...f, station_id: e.target.value }))} />
-          </Field>
-          <Field label="Display Name">
-            <input className={inputCls} placeholder="Glennallen" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))} />
-          </Field>
-          <Field label="Location">
-            <input className={inputCls} placeholder="Glennallen" value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} />
-          </Field>
-        </div>
-        <label className="flex items-center gap-2 text-sm text-gray-600">
-          <input type="checkbox" checked={form.archived} onChange={e => setForm(f => ({ ...f, archived: e.target.checked }))} />
-          Archive this EVSE
-        </label>
-        <div className="flex items-center gap-3">
-          <button className={btnPrimary} disabled={!form.station_id || upsert.isPending} onClick={() => { setStatus({ ok: true, msg: '' }); upsert.mutate(form) }}>
-            {upsert.isPending ? 'Saving…' : 'Save EVSE'}
-          </button>
-          <StatusMsg {...status} />
-        </div>
       </div>
     </>
   )
@@ -1146,22 +1129,24 @@ function UnitTypesSection() {
 
 // ── Onboard Unit sub-section ──────────────────────────────────────────────────
 
-function OnboardUnitForm({ onCreated, editUnit, onCancel }: {
+function OnboardUnitForm({ onCreated, editUnit, onCancel, prefillExternalId, defaultOpen }: {
   onCreated: () => void
   editUnit?: MaintenanceUnit | null
   onCancel?: () => void
+  prefillExternalId?: string
+  defaultOpen?: boolean
 }) {
   const isEdit = !!editUnit
   const qc = useQueryClient()
   const { data: unitTypes = [] } = useQuery({ queryKey: ['admin-fleet-unit-types'], queryFn: fetchFleetUnitTypes })
   const { data: sites = [] } = useQuery({ queryKey: ['maintenance-sites'], queryFn: fetchSites })
-  // In edit mode the form is always open; in add mode it starts collapsed.
-  const [open, setOpen] = useState(isEdit)
+  // Edit mode (and explicit defaultOpen) render open; bare add mode starts collapsed.
+  const [open, setOpen] = useState(isEdit || !!defaultOpen)
   const [form, setForm] = useState({
     serial_number: editUnit?.serial_number ?? '',
     name: editUnit?.name ?? '',
     display_name: editUnit?.display_name ?? '',
-    external_id: editUnit?.external_id ?? '',
+    external_id: editUnit?.external_id ?? prefillExternalId ?? '',
     make: editUnit?.make ?? '',
     model: editUnit?.model ?? '',
     connector_1: editUnit?.connector_types?.['1'] ?? '',
@@ -1510,18 +1495,19 @@ function ActiveFleetSection() {
           </tbody>
         </table>
       </div>
-      <div className="mt-3">
-        {editingUnit ? (
+      {editingUnit && (
+        <div className="mt-3">
           <OnboardUnitForm
             key={editingUnit.id}
             editUnit={editingUnit}
             onCreated={() => { setEditingUnit(null); handleDone() }}
             onCancel={() => setEditingUnit(null)}
           />
-        ) : (
-          <OnboardUnitForm onCreated={handleDone} />
-        )}
-      </div>
+        </div>
+      )}
+      <p className="mt-3 text-xs text-gray-400">
+        To onboard a new EVSE, use <span className="font-medium">Add EVSE</span> under EVSE &amp; Locations.
+      </p>
     </div>
   )
 }

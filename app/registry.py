@@ -40,6 +40,7 @@ class Snapshot:
 
 _snapshot: Optional[Snapshot] = None
 _loaded_at: float = 0.0
+_dirty: bool = False   # set by refresh() to force a rebuild regardless of TTL
 
 _QUERY = """
     SELECT c.external_id, c.display_name, c.connector_types, c.status,
@@ -103,16 +104,21 @@ def get_snapshot() -> Optional[Snapshot]:
     Returns ``None`` only on a cold-start DB failure, signalling the caller to
     fall back to the hardcoded constants.
     """
-    global _snapshot, _loaded_at
-    if _snapshot is not None and (time.monotonic() - _loaded_at) < _TTL_SECONDS:
+    global _snapshot, _loaded_at, _dirty
+
+    def _fresh() -> bool:
+        return not _dirty and _snapshot is not None and (time.monotonic() - _loaded_at) < _TTL_SECONDS
+
+    if _fresh():
         return _snapshot
     with _lock:
         # Re-check after acquiring the lock — another thread may have refreshed.
-        if _snapshot is not None and (time.monotonic() - _loaded_at) < _TTL_SECONDS:
+        if _fresh():
             return _snapshot
         try:
             _snapshot = _build()
             _loaded_at = time.monotonic()
+            _dirty = False
         except Exception as e:
             logger.warning(
                 "registry refresh failed (%s); using %s",
@@ -123,5 +129,5 @@ def get_snapshot() -> Optional[Snapshot]:
 
 def refresh() -> None:
     """Invalidate the cache so the next access rebuilds. Call after Admin writes."""
-    global _loaded_at
-    _loaded_at = 0.0
+    global _dirty
+    _dirty = True

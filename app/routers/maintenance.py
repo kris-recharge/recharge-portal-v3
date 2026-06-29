@@ -18,12 +18,14 @@ Routes:
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
+from .. import registry
 from ..auth import CurrentUser, PortalUser
 from ..config import DEV_BYPASS_AUTH
 from ..db import acquire
@@ -867,9 +869,13 @@ async def update_unit_type(type_id: str, body: UnitTypePatch, _: AdminUser):
 
 class OnboardUnitBody(BaseModel):
     serial_number: str
-    name: str
+    name: str                            # formal/Fleet name, e.g. "Charger - A"
     unit_type_id: str
     site_id: str
+    external_id: str | None = None       # OCPP asset id; optional — link later if not yet online
+    display_name: str | None = None      # dashboard/familiar name; falls back to ``name``
+    connector_1: str | None = None       # CHAdeMO | NACS | CCS (blank = no connector 1)
+    connector_2: str | None = None       # CHAdeMO | NACS | CCS (blank = no connector 2)
     commission_date: str | None = None
     warranty_start: str | None = None
     warranty_end: str | None = None
@@ -884,6 +890,15 @@ class OnboardUnitBody(BaseModel):
 
 @router.post("/api/admin/fleet/onboard", status_code=201)
 async def onboard_unit(body: OnboardUnitBody, _: AdminUser):
+    external_id = (body.external_id or "").strip() or None
+
+    # Build connector_types jsonb from the per-connector dropdowns (blank = omit).
+    connectors: dict[str, str] = {}
+    if body.connector_1:
+        connectors["1"] = body.connector_1
+    if body.connector_2:
+        connectors["2"] = body.connector_2
+
     async with acquire() as conn:
         # Check serial_number not already used
         existing = await conn.fetchrow(
@@ -893,24 +908,33 @@ async def onboard_unit(body: OnboardUnitBody, _: AdminUser):
         if existing:
             raise HTTPException(409, f"Serial number '{body.serial_number}' is already registered")
 
+        # An OCPP asset id can map to only one charger — reject a duplicate link.
+        if external_id:
+            dupe = await conn.fetchrow(
+                "SELECT id FROM chargers WHERE external_id = $1 LIMIT 1", external_id
+            )
+            if dupe:
+                raise HTTPException(409, f"OCPP asset id '{external_id}' is already linked to another unit")
+
         row = await conn.fetchrow(
             """
             INSERT INTO chargers
-                (serial_number, name, unit_type_id, site_id,
+                (serial_number, name, display_name, external_id, unit_type_id, site_id,
                  commission_date, warranty_start, warranty_end, warranty_notes,
                  owner_name, maintenance_responsibility,
                  network_platform, network_platform_notes,
                  port_count, status, connector_types)
-            VALUES ($1, $2, $3::uuid, $4::uuid,
-                    $5::date, $6::date, $7::date, $8,
-                    $9, $10, $11, $12, $13, 'active', '[]'::jsonb)
+            VALUES ($1, $2, $3, $4, $5::uuid, $6::uuid,
+                    $7::date, $8::date, $9::date, $10,
+                    $11, $12, $13, $14, $15, 'active', $16::jsonb)
             RETURNING id::text, name, serial_number
             """,
-            body.serial_number, body.name, body.unit_type_id, body.site_id,
+            body.serial_number, body.name, (body.display_name or body.name), external_id,
+            body.unit_type_id, body.site_id,
             body.commission_date, body.warranty_start, body.warranty_end, body.warranty_notes,
             body.owner_name, body.maintenance_responsibility,
             body.network_platform, body.network_platform_notes,
-            body.port_count,
+            body.port_count, json.dumps(connectors),
         )
 
         charger_id = row["id"]
@@ -923,6 +947,10 @@ async def onboard_unit(body: OnboardUnitBody, _: AdminUser):
             """,
             charger_id, body.site_id,
         )
+
+    # New unit may carry an external_id / display name / connectors the dashboard
+    # reads — drop the cached registry snapshot so it shows without waiting for TTL.
+    registry.refresh()
 
     return {"id": charger_id, "name": row["name"], "serial_number": row["serial_number"]}
 

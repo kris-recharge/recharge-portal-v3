@@ -827,6 +827,8 @@ export const updateFleetUnitType = (
 // Admin fleet — onboard unit
 export const onboardFleetUnit = (body: {
   serial_number: string; name: string; unit_type_id: string; site_id: string
+  external_id?: string | null; display_name?: string | null
+  connector_1?: string | null; connector_2?: string | null
   commission_date?: string | null; warranty_start?: string | null; warranty_end?: string | null
   warranty_notes?: string | null; owner_name?: string | null
   maintenance_responsibility?: string; network_platform?: string | null

@@ -23,6 +23,7 @@ import {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PLATFORMS = ['', 'RTM', 'RT50', 'MaxiCharger', 'HYC400', 'Autel', 'Other']
+const CONNECTOR_OPTIONS = ['CHAdeMO', 'NACS', 'CCS']
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1155,6 +1156,10 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
   const [form, setForm] = useState({
     serial_number: '',
     name: '',
+    display_name: '',
+    external_id: '',
+    connector_1: '',
+    connector_2: '',
     unit_type_id: '',
     site_id: '',
     commission_date: '',
@@ -1175,6 +1180,10 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
       await onboardFleetUnit({
         serial_number: form.serial_number,
         name: form.name,
+        display_name: form.display_name || null,
+        external_id: form.external_id || null,
+        connector_1: form.connector_1 || null,
+        connector_2: form.connector_2 || null,
         unit_type_id: form.unit_type_id,
         site_id: form.site_id,
         commission_date: form.commission_date || null,
@@ -1187,7 +1196,8 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
       })
       qc.invalidateQueries({ queryKey: ['maintenance-overview'] })
       setOpen(false)
-      setForm({ serial_number: '', name: '', unit_type_id: '', site_id: '', commission_date: '',
+      setForm({ serial_number: '', name: '', display_name: '', external_id: '', connector_1: '', connector_2: '',
+        unit_type_id: '', site_id: '', commission_date: '',
         warranty_start: '', warranty_end: '', owner_name: '', maintenance_responsibility: 'RCA',
         network_platform: '', port_count: '1' })
       onCreated()
@@ -1216,9 +1226,19 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
             className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 font-mono" />
         </div>
         <div>
-          <label className="block text-xs text-gray-500 mb-0.5">Display name *</label>
+          <label className="block text-xs text-gray-500 mb-0.5">Unit name *</label>
           <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+            placeholder="e.g. Charger - A" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Familiar name (dashboard)</label>
+          <input value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
+            placeholder="e.g. ARG - Left (blank = unit name)" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">OCPP asset id</label>
+          <input value={form.external_id} onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))}
+            placeholder="as_… (optional — link when online)" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 font-mono" />
         </div>
         <div>
           <label className="block text-xs text-gray-500 mb-0.5">Unit type *</label>
@@ -1278,6 +1298,22 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
           <input type="number" min={1} value={form.port_count}
             onChange={e => setForm(f => ({ ...f, port_count: e.target.value }))}
             className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Connector 1 type</label>
+          <select value={form.connector_1} onChange={e => setForm(f => ({ ...f, connector_1: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5">
+            <option value="">— none —</option>
+            {CONNECTOR_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Connector 2 type</label>
+          <select value={form.connector_2} onChange={e => setForm(f => ({ ...f, connector_2: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5">
+            <option value="">— none —</option>
+            {CONNECTOR_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
         </div>
       </div>
       {err && <p className="text-xs text-red-500">{err}</p>}

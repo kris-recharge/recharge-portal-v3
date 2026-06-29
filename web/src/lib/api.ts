@@ -662,6 +662,13 @@ export interface MaintenanceUnit {
   parts_on_order: boolean
   hyperdoc_pending: boolean
   pm_template_pending: boolean
+  // Full editable detail (for the Add/Edit EVSE form)
+  display_name: string | null
+  make: string | null
+  model: string | null
+  connector_types: Record<string, string>
+  network_platform_notes: string | null
+  port_count: number | null
 }
 
 export interface MaintenanceOverviewResponse {
@@ -828,6 +835,7 @@ export const updateFleetUnitType = (
 export const onboardFleetUnit = (body: {
   serial_number: string; name: string; unit_type_id: string; site_id: string
   external_id?: string | null; display_name?: string | null
+  make?: string | null; model?: string | null; parts_on_order?: boolean
   connector_1?: string | null; connector_2?: string | null
   commission_date?: string | null; warranty_start?: string | null; warranty_end?: string | null
   warranty_notes?: string | null; owner_name?: string | null
@@ -847,6 +855,15 @@ export const retireFleetUnit = (chargerId: string, reason: string) =>
 
 export const patchFleetUnit = (
   chargerId: string,
-  body: Partial<{ parts_on_order: boolean; warranty_notes: string | null; network_platform_notes: string | null }>,
+  body: Partial<{
+    name: string; display_name: string | null; external_id: string | null
+    serial_number: string | null; unit_type_id: string; site_id: string
+    make: string | null; model: string | null
+    connector_1: string | null; connector_2: string | null
+    commission_date: string | null; warranty_start: string | null; warranty_end: string | null
+    warranty_notes: string | null; owner_name: string | null
+    maintenance_responsibility: string; network_platform: string | null
+    network_platform_notes: string | null; port_count: number | null; parts_on_order: boolean
+  }>,
 ) =>
   apiFetch(`/api/admin/fleet/units/${chargerId}`, { method: 'PATCH', body: JSON.stringify(body) })

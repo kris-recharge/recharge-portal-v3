@@ -74,7 +74,17 @@ def _check_unit_access(user: PortalUser, external_id: str | None) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied for this unit")
 
 
-# ── Warranty status helper ────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _parse_jsonb(v: Any) -> dict:
+    """asyncpg returns jsonb as a str; normalise to a dict (``{}`` on anything else)."""
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except Exception:
+            return {}
+    return v if isinstance(v, dict) else {}
+
 
 def _warranty_status(warranty_end: date | None, owner_name: str | None) -> dict:
     if warranty_end is None:
@@ -133,6 +143,7 @@ async def maintenance_overview(
                     c.port_count, c.commission_date,
                     c.retired_at, c.retired_reason,
                     c.parts_on_order,
+                    c.make, c.model, c.display_name, c.connector_types,
                     s.name  AS site_name,
                     s.id::text AS site_id,
                     ut.id::text   AS unit_type_id,
@@ -172,6 +183,7 @@ async def maintenance_overview(
                     c.port_count, c.commission_date,
                     c.retired_at, c.retired_reason,
                     c.parts_on_order,
+                    c.make, c.model, c.display_name, c.connector_types,
                     s.name  AS site_name,
                     s.id::text AS site_id,
                     ut.id::text   AS unit_type_id,
@@ -341,6 +353,13 @@ async def maintenance_overview(
             "parts_on_order":       c["parts_on_order"] or False,
             "hyperdoc_pending":     hyperdoc_pending.get(cid, False),
             "pm_template_pending":  not c["has_pm_template"],
+            # Full editable detail (for the Add/Edit EVSE form)
+            "display_name":   c["display_name"],
+            "make":           c["make"],
+            "model":          c["model"],
+            "connector_types": _parse_jsonb(c["connector_types"]),
+            "network_platform_notes": c["network_platform_notes"],
+            "port_count":     c["port_count"],
         })
 
     return {"chargers": result}
@@ -874,8 +893,11 @@ class OnboardUnitBody(BaseModel):
     site_id: str
     external_id: str | None = None       # OCPP asset id; optional — link later if not yet online
     display_name: str | None = None      # dashboard/familiar name; falls back to ``name``
+    make: str | None = None              # descriptive manufacturer, e.g. "Autel"
+    model: str | None = None             # descriptive model, e.g. "MaxiCharge DC Fast 120"
     connector_1: str | None = None       # CHAdeMO | NACS | CCS (blank = no connector 1)
     connector_2: str | None = None       # CHAdeMO | NACS | CCS (blank = no connector 2)
+    parts_on_order: bool = False
     commission_date: str | None = None
     warranty_start: str | None = None
     warranty_end: str | None = None
@@ -920,17 +942,20 @@ async def onboard_unit(body: OnboardUnitBody, _: AdminUser):
             """
             INSERT INTO chargers
                 (serial_number, name, display_name, external_id, unit_type_id, site_id,
+                 make, model, parts_on_order,
                  commission_date, warranty_start, warranty_end, warranty_notes,
                  owner_name, maintenance_responsibility,
                  network_platform, network_platform_notes,
                  port_count, status, connector_types)
             VALUES ($1, $2, $3, $4, $5::uuid, $6::uuid,
-                    $7::date, $8::date, $9::date, $10,
-                    $11, $12, $13, $14, $15, 'active', $16::jsonb)
+                    $7, $8, $9,
+                    $10::date, $11::date, $12::date, $13,
+                    $14, $15, $16, $17, $18, 'active', $19::jsonb)
             RETURNING id::text, name, serial_number
             """,
             body.serial_number, body.name, (body.display_name or body.name), external_id,
             body.unit_type_id, body.site_id,
+            body.make, body.model, body.parts_on_order,
             body.commission_date, body.warranty_start, body.warranty_end, body.warranty_notes,
             body.owner_name, body.maintenance_responsibility,
             body.network_platform, body.network_platform_notes,
@@ -1024,29 +1049,92 @@ async def retire_unit(charger_id: str, body: RetireUnitBody, user: AdminUser):
 # ── Update operational flags (parts_on_order, etc.) ──────────────────────────
 
 class FleetUnitPatch(BaseModel):
-    parts_on_order: bool | None = None
+    # Any subset may be sent; only fields explicitly present are updated. The
+    # Add/Edit EVSE form sends the full set, so this doubles as the edit endpoint.
+    name: str | None = None
+    display_name: str | None = None
+    external_id: str | None = None
+    serial_number: str | None = None
+    unit_type_id: str | None = None
+    site_id: str | None = None
+    make: str | None = None
+    model: str | None = None
+    connector_1: str | None = None
+    connector_2: str | None = None
+    commission_date: str | None = None
+    warranty_start: str | None = None
+    warranty_end: str | None = None
     warranty_notes: str | None = None
+    owner_name: str | None = None
+    maintenance_responsibility: str | None = None
+    network_platform: str | None = None
     network_platform_notes: str | None = None
-    notes: str | None = None
+    port_count: int | None = None
+    parts_on_order: bool | None = None
+
+
+# Column → optional SQL cast for the dynamic UPDATE.
+_PATCH_CASTS: dict[str, str] = {
+    "name": "", "display_name": "", "external_id": "", "serial_number": "",
+    "make": "", "model": "", "owner_name": "", "maintenance_responsibility": "",
+    "network_platform": "", "network_platform_notes": "", "warranty_notes": "",
+    "port_count": "", "parts_on_order": "",
+    "unit_type_id": "::uuid", "site_id": "::uuid",
+    "commission_date": "::date", "warranty_start": "::date", "warranty_end": "::date",
+}
+
+
+def _norm(v: Any) -> Any:
+    """Empty/whitespace string → NULL; everything else unchanged."""
+    return None if isinstance(v, str) and v.strip() == "" else v
 
 
 @router.patch("/api/admin/fleet/units/{charger_id}")
 async def patch_fleet_unit(charger_id: str, body: FleetUnitPatch, _: AdminUser):
-    fields: dict[str, Any] = {}
-    if body.parts_on_order is not None:       fields["parts_on_order"]          = body.parts_on_order
-    if body.warranty_notes is not None:       fields["warranty_notes"]           = body.warranty_notes
-    if body.network_platform_notes is not None: fields["network_platform_notes"] = body.network_platform_notes
-    if not fields:
+    provided = body.model_fields_set
+    set_parts: list[str] = []
+    vals: list[Any] = []
+    idx = 2  # $1 is charger_id
+
+    for col, cast in _PATCH_CASTS.items():
+        if col in provided:
+            set_parts.append(f"{col} = ${idx}{cast}")
+            vals.append(_norm(getattr(body, col)))
+            idx += 1
+
+    # Rebuild connector_types jsonb from the two dropdowns if either was sent.
+    if "connector_1" in provided or "connector_2" in provided:
+        ct: dict[str, str] = {}
+        if _norm(body.connector_1):
+            ct["1"] = body.connector_1
+        if _norm(body.connector_2):
+            ct["2"] = body.connector_2
+        set_parts.append(f"connector_types = ${idx}::jsonb")
+        vals.append(json.dumps(ct))
+        idx += 1
+
+    if not set_parts:
         raise HTTPException(400, "No fields to update")
-    fields["updated_at"] = datetime.now(timezone.utc)
-    set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
+    set_parts.append("updated_at = NOW()")
+
     async with acquire() as conn:
+        # An OCPP asset id maps to exactly one charger.
+        ext = _norm(body.external_id)
+        if "external_id" in provided and ext:
+            dupe = await conn.fetchrow(
+                "SELECT id FROM chargers WHERE external_id = $1 AND id <> $2::uuid", ext, charger_id
+            )
+            if dupe:
+                raise HTTPException(409, f"OCPP asset id '{ext}' is already linked to another unit")
+
         row = await conn.fetchrow(
-            f"UPDATE chargers SET {set_clause} WHERE id = $1::uuid RETURNING id::text",
-            charger_id, *fields.values(),
+            f"UPDATE chargers SET {', '.join(set_parts)} WHERE id = $1::uuid RETURNING id::text",
+            charger_id, *vals,
         )
     if not row:
         raise HTTPException(404, "Unit not found")
+
+    registry.refresh()   # display name / connectors / asset id may have changed
     return {"ok": True}
 
 

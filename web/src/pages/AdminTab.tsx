@@ -13,7 +13,7 @@ import {
   fetchUtilityAccounts, createUtilityAccount, updateUtilityAccount, deleteUtilityAccount,
   fetchUtilityCredentials, upsertUtilityCredentials, triggerUtilityCollect,
   fetchFleetUnitTypes, createFleetUnitType, updateFleetUnitType,
-  fetchMaintenanceOverview, onboardFleetUnit, moveFleetUnit, retireFleetUnit,
+  fetchMaintenanceOverview, onboardFleetUnit, patchFleetUnit, moveFleetUnit, retireFleetUnit,
   fetchSites,
   UTILITY_LABELS,
   type AdminUser, type AdminPricing, type AdminEvse, type AdminUnidentifiedEvse,
@@ -1148,27 +1148,38 @@ function UnitTypesSection() {
 
 // ── Onboard Unit sub-section ──────────────────────────────────────────────────
 
-function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
+function OnboardUnitForm({ onCreated, editUnit, onCancel }: {
+  onCreated: () => void
+  editUnit?: MaintenanceUnit | null
+  onCancel?: () => void
+}) {
+  const isEdit = !!editUnit
   const qc = useQueryClient()
   const { data: unitTypes = [] } = useQuery({ queryKey: ['admin-fleet-unit-types'], queryFn: fetchFleetUnitTypes })
   const { data: sites = [] } = useQuery({ queryKey: ['maintenance-sites'], queryFn: fetchSites })
-  const [open, setOpen] = useState(false)
+  // In edit mode the form is always open; in add mode it starts collapsed.
+  const [open, setOpen] = useState(isEdit)
   const [form, setForm] = useState({
-    serial_number: '',
-    name: '',
-    display_name: '',
-    external_id: '',
-    connector_1: '',
-    connector_2: '',
-    unit_type_id: '',
-    site_id: '',
-    commission_date: '',
-    warranty_start: '',
-    warranty_end: '',
-    owner_name: '',
-    maintenance_responsibility: 'RCA',
-    network_platform: '',
-    port_count: '1',
+    serial_number: editUnit?.serial_number ?? '',
+    name: editUnit?.name ?? '',
+    display_name: editUnit?.display_name ?? '',
+    external_id: editUnit?.external_id ?? '',
+    make: editUnit?.make ?? '',
+    model: editUnit?.model ?? '',
+    connector_1: editUnit?.connector_types?.['1'] ?? '',
+    connector_2: editUnit?.connector_types?.['2'] ?? '',
+    unit_type_id: editUnit?.unit_type_id ?? '',
+    site_id: editUnit?.site_id ?? '',
+    commission_date: editUnit?.commission_date ?? '',
+    warranty_start: editUnit?.warranty_start ?? '',
+    warranty_end: editUnit?.warranty_end ?? '',
+    warranty_notes: editUnit?.warranty_notes ?? '',
+    owner_name: editUnit?.owner_name ?? '',
+    maintenance_responsibility: editUnit?.maintenance_responsibility ?? 'RCA',
+    network_platform: editUnit?.network_platform ?? '',
+    network_platform_notes: editUnit?.network_platform_notes ?? '',
+    port_count: editUnit?.port_count != null ? String(editUnit.port_count) : '1',
+    parts_on_order: editUnit?.parts_on_order ?? false,
   })
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -1177,11 +1188,13 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
     e.preventDefault()
     setSaving(true); setErr(null)
     try {
-      await onboardFleetUnit({
+      const payload = {
         serial_number: form.serial_number,
         name: form.name,
         display_name: form.display_name || null,
         external_id: form.external_id || null,
+        make: form.make || null,
+        model: form.model || null,
         connector_1: form.connector_1 || null,
         connector_2: form.connector_2 || null,
         unit_type_id: form.unit_type_id,
@@ -1189,17 +1202,25 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
         commission_date: form.commission_date || null,
         warranty_start: form.warranty_start || null,
         warranty_end: form.warranty_end || null,
+        warranty_notes: form.warranty_notes || null,
         owner_name: form.owner_name || null,
         maintenance_responsibility: form.maintenance_responsibility,
         network_platform: form.network_platform || null,
+        network_platform_notes: form.network_platform_notes || null,
         port_count: form.port_count ? Number(form.port_count) : null,
-      })
+        parts_on_order: form.parts_on_order,
+      }
+      if (isEdit && editUnit) {
+        await patchFleetUnit(editUnit.id, payload)
+      } else {
+        await onboardFleetUnit(payload)
+      }
       qc.invalidateQueries({ queryKey: ['maintenance-overview'] })
       setOpen(false)
-      setForm({ serial_number: '', name: '', display_name: '', external_id: '', connector_1: '', connector_2: '',
-        unit_type_id: '', site_id: '', commission_date: '',
-        warranty_start: '', warranty_end: '', owner_name: '', maintenance_responsibility: 'RCA',
-        network_platform: '', port_count: '1' })
+      setForm({ serial_number: '', name: '', display_name: '', external_id: '', make: '', model: '',
+        connector_1: '', connector_2: '', unit_type_id: '', site_id: '', commission_date: '',
+        warranty_start: '', warranty_end: '', warranty_notes: '', owner_name: '', maintenance_responsibility: 'RCA',
+        network_platform: '', network_platform_notes: '', port_count: '1', parts_on_order: false })
       onCreated()
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Error')
@@ -1218,7 +1239,9 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <form onSubmit={handleSubmit} className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
-      <div className="text-xs font-semibold text-gray-700 mb-2">Onboard new EVSE unit</div>
+      <div className="text-xs font-semibold text-gray-700 mb-2">
+        {isEdit ? `Edit EVSE — ${editUnit?.name}` : 'Onboard new EVSE unit'}
+      </div>
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="block text-xs text-gray-500 mb-0.5">Serial number *</label>
@@ -1259,6 +1282,16 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
           </select>
         </div>
         <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Make</label>
+          <input value={form.make} onChange={e => setForm(f => ({ ...f, make: e.target.value }))}
+            placeholder="e.g. Autel" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Model</label>
+          <input value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))}
+            placeholder="e.g. MaxiCharge DC Fast 120" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div>
           <label className="block text-xs text-gray-500 mb-0.5">Commission date</label>
           <input type="date" value={form.commission_date} onChange={e => setForm(f => ({ ...f, commission_date: e.target.value }))}
             className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
@@ -1268,6 +1301,11 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
           <input value={form.network_platform} onChange={e => setForm(f => ({ ...f, network_platform: e.target.value }))}
             placeholder="e.g. RTM, Autel" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
         </div>
+        <div className="col-span-2">
+          <label className="block text-xs text-gray-500 mb-0.5">Network platform notes</label>
+          <input value={form.network_platform_notes} onChange={e => setForm(f => ({ ...f, network_platform_notes: e.target.value }))}
+            placeholder="e.g. ABB remote mgmt — no OCPP webhook" className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
         <div>
           <label className="block text-xs text-gray-500 mb-0.5">Warranty start</label>
           <input type="date" value={form.warranty_start} onChange={e => setForm(f => ({ ...f, warranty_start: e.target.value }))}
@@ -1276,6 +1314,11 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
         <div>
           <label className="block text-xs text-gray-500 mb-0.5">Warranty end</label>
           <input type="date" value={form.warranty_end} onChange={e => setForm(f => ({ ...f, warranty_end: e.target.value }))}
+            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
+        </div>
+        <div className="col-span-2">
+          <label className="block text-xs text-gray-500 mb-0.5">Warranty notes</label>
+          <input value={form.warranty_notes} onChange={e => setForm(f => ({ ...f, warranty_notes: e.target.value }))}
             className="w-full text-xs border border-gray-300 rounded px-2 py-1.5" />
         </div>
         <div>
@@ -1316,13 +1359,19 @@ function OnboardUnitForm({ onCreated }: { onCreated: () => void }) {
           </select>
         </div>
       </div>
+      <label className="flex items-center gap-2 text-xs text-gray-600 pt-1">
+        <input type="checkbox" checked={form.parts_on_order}
+          onChange={e => setForm(f => ({ ...f, parts_on_order: e.target.checked }))} />
+        Parts on order
+      </label>
       {err && <p className="text-xs text-red-500">{err}</p>}
       <div className="flex gap-2 pt-1">
         <button type="submit" disabled={saving}
           className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded font-medium hover:bg-blue-700 disabled:opacity-50">
-          {saving ? 'Saving…' : 'Onboard unit'}
+          {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Onboard unit'}
         </button>
-        <button type="button" onClick={() => setOpen(false)} className="text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+        <button type="button" onClick={() => { setOpen(false); onCancel?.() }}
+          className="text-xs text-gray-500 hover:text-gray-700">Cancel</button>
       </div>
     </form>
   )
@@ -1413,6 +1462,7 @@ function ActiveFleetSection() {
     queryFn: () => fetchMaintenanceOverview(false),
   })
   const { data: sites = [] } = useQuery({ queryKey: ['maintenance-sites'], queryFn: fetchSites })
+  const [editingUnit, setEditingUnit] = useState<MaintenanceUnit | null>(null)
 
   const units = data?.chargers ?? []
 
@@ -1449,7 +1499,10 @@ function ActiveFleetSection() {
                   }`}>{u.status}</span>
                 </td>
                 <td className="py-2">
-                  <FleetUnitActions unit={u} sites={sites} onDone={handleDone} />
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setEditingUnit(u)} className="text-xs text-blue-600 hover:text-blue-800">Edit</button>
+                    <FleetUnitActions unit={u} sites={sites} onDone={handleDone} />
+                  </div>
                 </td>
               </tr>
             ))}
@@ -1460,7 +1513,16 @@ function ActiveFleetSection() {
         </table>
       </div>
       <div className="mt-3">
-        <OnboardUnitForm onCreated={handleDone} />
+        {editingUnit ? (
+          <OnboardUnitForm
+            key={editingUnit.id}
+            editUnit={editingUnit}
+            onCreated={() => { setEditingUnit(null); handleDone() }}
+            onCancel={() => setEditingUnit(null)}
+          />
+        ) : (
+          <OnboardUnitForm onCreated={handleDone} />
+        )}
       </div>
     </div>
   )

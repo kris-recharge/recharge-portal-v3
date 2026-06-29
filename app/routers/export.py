@@ -139,38 +139,161 @@ async def export_sessions(
                   AND m.ts <= $3::timestamptz + INTERVAL '1 day'
                 GROUP BY m.station_id, m.connector_id, m.transaction_id
             )
-            SELECT
-                s.*,
-                -- Authentication: raw id_tag from authorize_methods (all auth methods)
-                (SELECT a.id_tag FROM authorize_methods a
-                 WHERE a.asset_id = s.station_id
-                   AND a.start_received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
-                                               AND s.start_utc + INTERVAL '5 minutes'
-                 ORDER BY ABS(EXTRACT(EPOCH FROM (a.start_received_at - s.start_utc))) ASC
-                 LIMIT 1) AS auth_tag,
-                -- VID: only VID:-prefixed tags from ocpp_events Authorize (499 rows, matches v2)
-                (SELECT oe.action_payload->>'idTag'
-                 FROM ocpp_events oe
-                 WHERE oe.asset_id = s.station_id
-                   AND oe.action   = 'Authorize'
-                   AND oe.action_payload->>'idTag' LIKE 'VID:%'
-                   AND oe.received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
-                                          AND s.start_utc + INTERVAL '5 minutes'
-                 ORDER BY ABS(EXTRACT(EPOCH FROM (oe.received_at - s.start_utc))) ASC
-                 LIMIT 1) AS vid_tag,
-                ep.price_per_kwh,
-                ep.connection_fee
-            FROM sessions s
-            LEFT JOIN LATERAL (
-                SELECT price_per_kwh, connection_fee
-                FROM evse_pricing
-                WHERE station_id = s.station_id
-                  AND effective_start <= s.start_utc
-                  AND (effective_end IS NULL OR effective_end > s.start_utc)
-                ORDER BY effective_start DESC LIMIT 1
-            ) ep ON true
-            WHERE s.start_utc <= $3   -- v3.2: keep only sessions that START in range
-            ORDER BY s.start_utc DESC  -- v3.2: newest start on top
+            with_auth AS (
+                SELECT
+                    s.*,
+                    -- Authentication: raw id_tag from authorize_methods (all methods)
+                    (SELECT a.id_tag FROM authorize_methods a
+                     WHERE a.asset_id = s.station_id
+                       AND a.start_received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
+                                                   AND s.start_utc + INTERVAL '5 minutes'
+                     ORDER BY ABS(EXTRACT(EPOCH FROM (a.start_received_at - s.start_utc))) ASC
+                     LIMIT 1) AS auth_tag,
+                    -- VID: only VID:-prefixed tags from ocpp_events Authorize
+                    (SELECT oe.action_payload->>'idTag'
+                     FROM ocpp_events oe
+                     WHERE oe.asset_id = s.station_id
+                       AND oe.action   = 'Authorize'
+                       AND oe.action_payload->>'idTag' LIKE 'VID:%'
+                       AND oe.received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
+                                              AND s.start_utc + INTERVAL '5 minutes'
+                     ORDER BY ABS(EXTRACT(EPOCH FROM (oe.received_at - s.start_utc))) ASC
+                     LIMIT 1) AS vid_tag,
+                    ep.price_per_kwh,
+                    ep.connection_fee
+                FROM sessions s
+                LEFT JOIN LATERAL (
+                    SELECT price_per_kwh, connection_fee
+                    FROM evse_pricing
+                    WHERE station_id = s.station_id
+                      AND effective_start <= s.start_utc
+                      AND (effective_end IS NULL OR effective_end > s.start_utc)
+                    ORDER BY effective_start DESC LIMIT 1
+                ) ep ON true
+            ),
+            real_rows AS (
+                SELECT
+                    'session'::text                     AS kind,
+                    station_id,
+                    connector_id,
+                    transaction_id::text                AS transaction_id,
+                    start_utc,
+                    end_utc,
+                    max_power_w::numeric                AS max_power_w,
+                    energy_wh_delta::numeric            AS energy_wh_delta,
+                    soc_start::numeric                  AS soc_start,
+                    soc_first_nonzero::numeric          AS soc_first_nonzero,
+                    soc_end::numeric                    AS soc_end,
+                    auth_tag,
+                    vid_tag,
+                    price_per_kwh::numeric              AS price_per_kwh,
+                    connection_fee::numeric            AS connection_fee
+                FROM with_auth
+                WHERE start_utc <= $3   -- v3.2: keep only sessions that START in range
+            ),
+            -- ── Failed start attempts (mirrors /api/sessions) ───────────────────
+            -- A plug-in (StatusNotification "Preparing") where the driver presented
+            -- a real credential (non-VID token Authorize via CC reader or app) but
+            -- the session never reached "Charging" before the connector cleared
+            -- (capped at 2 h). These never mint a transaction_id, so they never land
+            -- in meter_values_parsed and are otherwise invisible in the export.
+            -- Excluded by design: AutoCharge VID:* probes and plug-and-unplug blips
+            -- with no Authorize at all.
+            sn AS (
+                SELECT
+                    asset_id,
+                    connector_id,
+                    received_at,
+                    action_payload->>'status'                        AS status,
+                    LAG(action_payload->>'status') OVER (
+                        PARTITION BY asset_id, connector_id ORDER BY received_at
+                    )                                                AS prev_status
+                FROM ocpp_events
+                WHERE asset_id = ANY($1::text[])
+                  AND action = 'StatusNotification'
+                  AND action_payload->>'status' IS NOT NULL
+            ),
+            charge_sig AS (   -- any signal that a transaction actually began
+                SELECT asset_id, connector_id, received_at
+                FROM ocpp_events
+                WHERE asset_id = ANY($1::text[])
+                  AND ( (action = 'StatusNotification'
+                         AND action_payload->>'status' = 'Charging')
+                        OR action = 'StartTransaction' )
+            ),
+            avail AS (        -- connector cleared / unplugged
+                SELECT asset_id, connector_id, received_at
+                FROM ocpp_events
+                WHERE asset_id = ANY($1::text[])
+                  AND action = 'StatusNotification'
+                  AND action_payload->>'status' = 'Available'
+            ),
+            attempts AS (
+                SELECT
+                    s.asset_id    AS station_id,
+                    s.connector_id,
+                    s.received_at AS attempt_at,
+                    LEAST(
+                        s.received_at + INTERVAL '2 hours',
+                        COALESCE((SELECT MIN(a.received_at) FROM avail a
+                                  WHERE a.asset_id = s.asset_id
+                                    AND a.connector_id IS NOT DISTINCT FROM s.connector_id
+                                    AND a.received_at > s.received_at),
+                                 'infinity'::timestamptz)
+                    )                                            AS episode_end
+                FROM sn s
+                WHERE s.status = 'Preparing'
+                  AND s.prev_status IS DISTINCT FROM 'Preparing'   -- first Preparing of an episode
+                  AND s.received_at >= $2
+                  AND s.received_at <= $3
+            ),
+            attempts_filtered AS (
+                SELECT a.station_id, a.connector_id, a.attempt_at
+                FROM attempts a
+                WHERE
+                    NOT EXISTS (   -- (1) never reached Charging within the episode
+                        SELECT 1 FROM charge_sig c
+                        WHERE c.asset_id = a.station_id
+                          AND c.connector_id IS NOT DISTINCT FROM a.connector_id
+                          AND c.received_at > a.attempt_at
+                          AND c.received_at < a.episode_end
+                    )
+                    AND EXISTS (   -- (2) but a real, non-AutoCharge credential was presented
+                        SELECT 1 FROM ocpp_events az
+                        WHERE az.asset_id = a.station_id
+                          AND az.action = 'Authorize'
+                          AND az.action_payload->>'idTag' NOT LIKE 'VID:%'
+                          AND az.received_at BETWEEN a.attempt_at - INTERVAL '30 seconds'
+                                                 AND a.episode_end
+                    )
+            ),
+            failed_rows AS (
+                SELECT
+                    'failed'::text                      AS kind,
+                    station_id,
+                    connector_id,
+                    'attempt:' || station_id || ':' || COALESCE(connector_id, 0)
+                               || ':' || EXTRACT(EPOCH FROM attempt_at)::bigint::text AS transaction_id,
+                    attempt_at                          AS start_utc,
+                    NULL::timestamptz                   AS end_utc,
+                    NULL::numeric                       AS max_power_w,
+                    NULL::numeric                       AS energy_wh_delta,
+                    NULL::numeric                       AS soc_start,
+                    NULL::numeric                       AS soc_first_nonzero,
+                    NULL::numeric                       AS soc_end,
+                    NULL::text                          AS auth_tag,
+                    NULL::text                          AS vid_tag,
+                    NULL::numeric                       AS price_per_kwh,
+                    NULL::numeric                       AS connection_fee
+                FROM attempts_filtered
+            ),
+            unioned AS (
+                SELECT * FROM real_rows
+                UNION ALL
+                SELECT * FROM failed_rows
+            )
+            SELECT * FROM unioned
+            ORDER BY start_utc DESC NULLS LAST  -- v3.2: newest start on top
             """,
             allowed, start_utc, end_utc,
         )
@@ -246,21 +369,22 @@ async def export_sessions(
 
     # ── Build sessions rows ───────────────────────────────────────────────────
     session_columns = [
-        "Start Date/Time (AK)",   # A
-        "End Date/Time (AK)",     # B
-        "EVSE",                   # C
-        "Location",               # D
-        "Connector #",            # E
-        "Connector Type",         # F
-        "Max Power (kW)",         # G
-        "Energy Delivered (kWh)", # H
-        "Duration (min)",         # I
-        "SoC Start (%)",          # J
-        "SoC End (%)",            # K
-        "Authentication",         # L
-        "Authentication Method",  # M
-        "Est. Revenue (USD)",     # N
-        "VID",                    # O
+        "Status",                 # A — Completed | Auth Timed Out (v3.2)
+        "Start Date/Time (AK)",   # B
+        "End Date/Time (AK)",     # C
+        "EVSE",                   # D
+        "Location",               # E
+        "Connector #",            # F
+        "Connector Type",         # G
+        "Max Power (kW)",         # H
+        "Energy Delivered (kWh)", # I
+        "Duration (min)",         # J
+        "SoC Start (%)",          # K
+        "SoC End (%)",            # L
+        "Authentication",         # M
+        "Authentication Method",  # N
+        "Est. Revenue (USD)",     # O
+        "VID",                    # P
     ]
 
     data_rows: list[list] = []
@@ -269,6 +393,10 @@ async def export_sessions(
         conn_id    = r["connector_id"]
         start_dt   = r["start_utc"]
         end_dt     = r["end_utc"]
+        is_failed  = r["kind"] == "failed"
+        # Failed-start attempts carry no transaction → no energy/SoC/revenue.
+        # Match the on-screen badge so export counts reconcile with the table.
+        status     = "Auth Timed Out" if is_failed else "Completed"
         dur_min    = (
             round((end_dt - start_dt).total_seconds() / 60.0, 2)
             if start_dt and end_dt else ""
@@ -304,8 +432,9 @@ async def export_sessions(
             soc_start_val = round(soc_start_val, 1)
 
         data_rows.append([
-            _ak_dt(start_dt),   # A — native datetime cell (v3.2)
-            _ak_dt(end_dt),     # B — native datetime cell (v3.2)
+            status,             # A — Status (v3.2)
+            _ak_dt(start_dt),   # B — native datetime cell (v3.2)
+            _ak_dt(end_dt),     # C — native datetime cell (v3.2)
             display_name(sid),
             location_label(sid),
             conn_id,
@@ -315,10 +444,10 @@ async def export_sessions(
             dur_min,
             _pct(soc_start_val),
             _pct(soc_end_val),
-            r["auth_tag"] or "",                        # L — Authentication (raw tag)
-            _auth_method(r["auth_tag"] or ""),          # M — Authentication Method
-            est_rev,                                    # N — Est. Revenue
-            r["vid_tag"] or "",                         # O — VID (VID:-prefixed only)
+            r["auth_tag"] or "",                        # M — Authentication (raw tag)
+            _auth_method(r["auth_tag"] or ""),          # N — Authentication Method
+            est_rev,                                    # O — Est. Revenue
+            r["vid_tag"] or "",                         # P — VID (VID:-prefixed only)
         ])
 
     # ── Build faults rows ─────────────────────────────────────────────────────
@@ -393,8 +522,8 @@ async def export_sessions(
     ws1.append(session_columns)
     for row in data_rows:
         ws1.append(row)
-    # v3.2: format the two datetime columns (A=Start, B=End) as real dates.
-    for col in ("A", "B"):
+    # v3.2: format the two datetime columns (B=Start, C=End) as real dates.
+    for col in ("B", "C"):
         for cell in ws1[col][1:]:   # skip header row
             cell.number_format = _XLSX_DT_FORMAT
 

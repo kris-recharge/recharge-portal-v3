@@ -956,7 +956,8 @@ async def onboard_unit(body: OnboardUnitBody, _: AdminUser):
             body.serial_number, body.name, (body.display_name or body.name), external_id,
             body.unit_type_id, body.site_id,
             body.make, body.model, body.parts_on_order,
-            body.commission_date, body.warranty_start, body.warranty_end, body.warranty_notes,
+            _to_date(body.commission_date), _to_date(body.warranty_start), _to_date(body.warranty_end),
+            body.warranty_notes,
             body.owner_name, body.maintenance_responsibility,
             body.network_platform, body.network_platform_notes,
             body.port_count, json.dumps(connectors),
@@ -1084,9 +1085,25 @@ _PATCH_CASTS: dict[str, str] = {
 }
 
 
+_DATE_COLS = {"commission_date", "warranty_start", "warranty_end"}
+
+
 def _norm(v: Any) -> Any:
     """Empty/whitespace string → NULL; everything else unchanged."""
     return None if isinstance(v, str) and v.strip() == "" else v
+
+
+def _to_date(v: Any) -> date | None:
+    """Parse an ISO date string ('YYYY-MM-DD') to a date — asyncpg's date codec
+    rejects raw strings even with a ::date cast."""
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return None
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
 
 
 @router.patch("/api/admin/fleet/units/{charger_id}")
@@ -1098,8 +1115,9 @@ async def patch_fleet_unit(charger_id: str, body: FleetUnitPatch, _: AdminUser):
 
     for col, cast in _PATCH_CASTS.items():
         if col in provided:
+            raw = getattr(body, col)
             set_parts.append(f"{col} = ${idx}{cast}")
-            vals.append(_norm(getattr(body, col)))
+            vals.append(_to_date(raw) if col in _DATE_COLS else _norm(raw))
             idx += 1
 
     # Rebuild connector_types jsonb from the two dropdowns if either was sent.

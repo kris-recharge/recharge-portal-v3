@@ -627,7 +627,9 @@ function SessionRow({
     >
       <td className="font-mono text-xs">
         {failed ? (
-          <div className="flex items-center gap-2">
+          // Stack the badge above the timestamp so a failed row is no wider than
+          // a plain timestamp — keeps the Start column the same width as End.
+          <div className="flex flex-col items-start gap-1">
             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 uppercase tracking-wide whitespace-nowrap">
               Auth timed out
             </span>

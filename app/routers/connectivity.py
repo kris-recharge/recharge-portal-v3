@@ -133,8 +133,24 @@ async def get_connectivity_history(
     station_id: list[str] | None = Query(None),
 ):
     """
-    BootNotification events in the selected date range — each one means the charger
-    rebooted or re-established its connection to the network.
+    Reconnect events in the selected date range.
+
+    A reconnect is any point where the charger's LynkWell-assigned connection_id
+    changes from one OCPP message to the next. This captures *transport-layer*
+    socket re-establishments (SIM drops, cellular flaps) — not just reboots.
+
+    LynkWell mints a fresh connection_id on every websocket reconnect, and that new
+    id then rides in on whatever message the charger sends next. Filtering on
+    action='BootNotification' (the old behaviour) only caught true power-cycle
+    reboots and missed socket flaps that resume via Heartbeat/StatusNotification,
+    badly undercounting cellular instability. The `event` field on each row now
+    tells you which kind it was: BootNotification = real reboot, Heartbeat /
+    StatusNotification = bare socket reconnect.
+
+    Detection uses LAG over connection_id per asset, ordered by time. The first
+    captured event per charger in the window is the baseline (prev_conn IS NULL)
+    and is not counted, so a reconnect landing exactly on the window's opening
+    event may be missed — at most one undercount per charger per window.
     """
     all_ids = get_all_station_ids()
     allowed = filter_evse_ids(all_ids, user.allowed_evse_ids)
@@ -155,17 +171,32 @@ async def get_connectivity_history(
     async with acquire() as conn:
         rows = await conn.fetch(
             """
+            WITH ordered AS (
+                SELECT
+                    asset_id,
+                    received_at,
+                    connector_id,
+                    connection_id,
+                    action,
+                    LAG(connection_id) OVER (
+                        PARTITION BY asset_id
+                        ORDER BY received_at, id
+                    ) AS prev_conn
+                FROM ocpp_events
+                WHERE asset_id = ANY($1::text[])
+                  AND received_at >= $2
+                  AND received_at <= $3
+                  AND connection_id IS NOT NULL
+            )
             SELECT
                 asset_id,
                 received_at,
                 connector_id,
                 connection_id,
                 action
-            FROM ocpp_events
-            WHERE asset_id = ANY($1::text[])
-              AND action = 'BootNotification'
-              AND received_at >= $2
-              AND received_at <= $3
+            FROM ordered
+            WHERE prev_conn IS NOT NULL
+              AND prev_conn <> connection_id
             ORDER BY received_at DESC
             LIMIT 2000
             """,

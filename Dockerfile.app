@@ -17,4 +17,9 @@ COPY app/ ./app/
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Single worker ON PURPOSE: the lifespan starts in-process background services
+# (alert poll thread, APScheduler utility collector, SSE broadcast queues).
+# With >1 worker each process runs its own copy -> duplicate alert emails,
+# doubled DB polling, connector-count double-counting, and SSE clients
+# connected to a worker that never fires alerts.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

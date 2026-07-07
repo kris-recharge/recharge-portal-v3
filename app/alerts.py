@@ -404,26 +404,42 @@ def _check_faults(conn) -> None:
 
     with conn.cursor() as cur:
         cur.execute(
-            """
+            r"""
             SELECT
-                asset_id,
-                received_at,
-                connector_id,
-                action_payload->>'status'           AS status,
-                action_payload->>'errorCode'        AS error_code,
-                action_payload->>'vendorErrorCode'  AS vendor_error_code
-            FROM ocpp_events
-            WHERE action = 'StatusNotification'
-              AND action_payload->>'errorCode' != 'NoError'
-              AND received_at >= %s
-            ORDER BY received_at ASC
+                e.asset_id,
+                e.received_at,
+                e.connector_id,
+                e.action_payload->>'status'           AS status,
+                e.action_payload->>'errorCode'        AS error_code,
+                e.action_payload->>'vendorErrorCode'  AS vendor_error_code,
+                -- Vendor error description, scoped to the station's manufacturer
+                -- (same lookup the Status History tab uses in routers/status.py).
+                CASE
+                    WHEN (e.action_payload->>'vendorErrorCode') !~ '^\d+$' THEN NULL
+                    WHEN ut.manufacturer = 'Tritium'
+                        THEN (SELECT t.description FROM tritium_error_codes t
+                              WHERE t.code = (e.action_payload->>'vendorErrorCode')::integer
+                              LIMIT 1)
+                    WHEN ut.manufacturer = 'Alpitronic'
+                        THEN (SELECT a.description FROM alpitronic_error_codes a
+                              WHERE a.error_code = (e.action_payload->>'vendorErrorCode')::integer
+                              LIMIT 1)
+                    ELSE NULL
+                END                                    AS vendor_error_description
+            FROM ocpp_events e
+            LEFT JOIN chargers c    ON c.external_id = e.asset_id
+            LEFT JOIN unit_types ut ON ut.id = c.unit_type_id
+            WHERE e.action = 'StatusNotification'
+              AND e.action_payload->>'errorCode' != 'NoError'
+              AND e.received_at >= %s
+            ORDER BY e.received_at ASC
             """,
             (lookback,),
         )
         rows = cur.fetchall()
 
     for row in rows:
-        sid, recv_at, conn_id, status, error_code, vendor_code = row
+        sid, recv_at, conn_id, status, error_code, vendor_code, vendor_desc = row
         if recv_at.tzinfo is None:
             recv_at = recv_at.replace(tzinfo=timezone.utc)
 
@@ -436,6 +452,8 @@ def _check_faults(conn) -> None:
         name   = display_name(sid)
         ts     = _fmt_ak(recv_at)
         detail = f"{error_code}" + (f" / {vendor_code}" if vendor_code else "")
+        if vendor_desc:
+            detail += f" — {vendor_desc[:200]}"
         msg    = f"{status or 'Fault'} — {detail}"
         _fire_alert(
             conn,
@@ -453,6 +471,7 @@ def _check_faults(conn) -> None:
                     ("Status",       status or "—"),
                     ("Error Code",   error_code or "—"),
                     ("Vendor Code",  vendor_code or "—"),
+                    ("Vendor Error", vendor_desc or "—"),
                     ("Time",         ts),
                 ],
             ),

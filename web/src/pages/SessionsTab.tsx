@@ -622,7 +622,7 @@ function SessionRow({
       onClick={failed ? undefined : onSelect}
       className={failed ? 'bg-amber-50/60' : 'cursor-pointer'}
       title={failed
-        ? 'Driver plugged in and presented a card/app credential, but charging never started (no transaction). AutoCharge probes and casual plug/unplugs are excluded.'
+        ? 'Driver plugged in but charging never started (no transaction) — a card/app credential stalled, or the charger timed out waiting for authorization (e.g. a rejected AutoCharge vehicle; its VID shows in the ID tag column). Casual plug/unplugs are excluded.'
         : 'Click to view session detail chart'}
     >
       <td className="font-mono text-xs">

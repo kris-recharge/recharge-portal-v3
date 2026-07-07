@@ -206,6 +206,11 @@ async def get_sessions(
             -- never appear in meter_values_parsed and are otherwise invisible.
             -- Excluded by design: AutoCharge VID:* probes (Blocked when AutoCharge
             -- isn't configured) and plug-and-unplug blips with no Authorize at all.
+            -- EXCEPTION: an episode that ends in the charger's own auth-timeout
+            -- fault (Tritium vendor code 824, Alpitronic 23) counts even when the
+            -- only Authorize was a rejected AutoCharge VID — a real driver plugged
+            -- in and never got authorized, which is exactly the failed attempt the
+            -- operator wants to see.
             sn AS (
                 SELECT
                     asset_id,
@@ -252,12 +257,17 @@ async def get_sessions(
                     )                                            AS episode_end
                 FROM sn s
                 WHERE s.status = 'Preparing'
-                  AND s.prev_status IS DISTINCT FROM 'Preparing'   -- first Preparing of an episode
+                  -- First Preparing of an episode.  A Preparing directly after
+                  -- Faulted (no Available/Finishing between) is the same plug-in
+                  -- continuing — Tritium flaps Preparing↔Faulted during a fault —
+                  -- so it must not start a new attempt row.
+                  AND s.prev_status IS DISTINCT FROM 'Preparing'
+                  AND s.prev_status IS DISTINCT FROM 'Faulted'
                   AND ($2::timestamptz IS NULL OR s.received_at >= $2)
                   AND ($3::timestamptz IS NULL OR s.received_at <= $3)
             ),
             attempts_filtered AS (
-                SELECT a.station_id, a.connector_id, a.attempt_at
+                SELECT a.station_id, a.connector_id, a.attempt_at, a.episode_end
                 FROM attempts a
                 WHERE
                     -- (1) never reached Charging within the episode
@@ -268,41 +278,65 @@ async def get_sessions(
                           AND c.received_at > a.attempt_at
                           AND c.received_at < a.episode_end
                     )
-                    -- (2) but a real, non-AutoCharge credential was presented:
-                    -- a token (non-VID) Authorize.  VID:* Authorizes are AutoCharge
-                    -- probes (Blocked when AutoCharge isn't configured) and on their
-                    -- own are NOT a user charge attempt; a plug-in that never
-                    -- produced any Authorize (plug-and-unplug) is likewise ignored.
-                    -- This keeps the CC/app-reader stall case the operator cares
-                    -- about.  Authorize messages carry no connector_id, so match on
-                    -- station + time window.
-                    AND EXISTS (
-                        SELECT 1 FROM ocpp_events az
-                        WHERE az.asset_id = a.station_id
-                          AND az.action = 'Authorize'
-                          AND az.action_payload->>'idTag' NOT LIKE 'VID:%'
-                          AND az.received_at BETWEEN a.attempt_at - INTERVAL '30 seconds'
-                                                 AND a.episode_end
+                    -- (2) but a real user attempt is evidenced by either:
+                    AND (
+                        -- (2a) a real, non-AutoCharge credential was presented:
+                        -- a token (non-VID) Authorize.  VID:* Authorizes are AutoCharge
+                        -- probes (Blocked when AutoCharge isn't configured) and on their
+                        -- own are NOT a user charge attempt; a plug-in that never
+                        -- produced any Authorize (plug-and-unplug) is likewise ignored.
+                        -- This keeps the CC/app-reader stall case the operator cares
+                        -- about.  Authorize messages carry no connector_id, so match on
+                        -- station + time window.
+                        EXISTS (
+                            SELECT 1 FROM ocpp_events az
+                            WHERE az.asset_id = a.station_id
+                              AND az.action = 'Authorize'
+                              AND az.action_payload->>'idTag' NOT LIKE 'VID:%'
+                              AND az.received_at BETWEEN a.attempt_at - INTERVAL '30 seconds'
+                                                     AND a.episode_end
+                        )
+                        -- (2b) or the charger raised an auth-timeout fault: no accepted
+                        -- authorization arrived within its timeout after plug-in.
+                        -- Tritium vendor code 824; Alpitronic 23 "Authorization Timeout"
+                        -- (Tritium's own 23 is "Not used", so no cross-vendor collision).
+                        -- Ordinary plug/unplug blips and successful AutoCharge starts
+                        -- never produce these codes.
+                        OR EXISTS (
+                            SELECT 1 FROM ocpp_events ft
+                            WHERE ft.asset_id = a.station_id
+                              AND ft.action = 'StatusNotification'
+                              AND ft.action_payload->>'vendorErrorCode' IN ('824', '23')
+                              AND ft.connector_id IS NOT DISTINCT FROM a.connector_id
+                              AND ft.received_at BETWEEN a.attempt_at AND a.episode_end
+                        )
                     )
             ),
             failed_rows AS (
                 SELECT
                     'failed'::text                      AS kind,
-                    station_id,
-                    connector_id,
-                    'attempt:' || station_id || ':' || COALESCE(connector_id, 0)
-                               || ':' || EXTRACT(EPOCH FROM attempt_at)::bigint::text AS transaction_id,
-                    attempt_at                          AS start_utc,
+                    f.station_id,
+                    f.connector_id,
+                    'attempt:' || f.station_id || ':' || COALESCE(f.connector_id, 0)
+                               || ':' || EXTRACT(EPOCH FROM f.attempt_at)::bigint::text AS transaction_id,
+                    f.attempt_at                        AS start_utc,
                     NULL::timestamptz                   AS end_utc,
                     NULL::numeric                       AS max_power_w,
                     NULL::numeric                       AS energy_wh_delta,
                     NULL::numeric                       AS soc_start,
                     NULL::numeric                       AS soc_first_nonzero,
                     NULL::numeric                       AS soc_end,
-                    NULL::text                          AS id_tag,
+                    -- Surface the credential that failed (e.g. the rejected
+                    -- AutoCharge VID) so repeat offenders are visible in the table.
+                    (SELECT az.action_payload->>'idTag' FROM ocpp_events az
+                     WHERE az.asset_id = f.station_id
+                       AND az.action = 'Authorize'
+                       AND az.received_at BETWEEN f.attempt_at - INTERVAL '30 seconds'
+                                              AND f.episode_end
+                     ORDER BY az.received_at ASC LIMIT 1) AS id_tag,
                     NULL::numeric                       AS price_per_kwh,
                     NULL::numeric                       AS connection_fee
-                FROM attempts_filtered
+                FROM attempts_filtered f
             ),
             unioned AS (
                 SELECT * FROM real_rows

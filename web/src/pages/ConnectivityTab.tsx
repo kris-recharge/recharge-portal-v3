@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
 import { fetchConnectivity, fetchConnectivityHistory } from '../lib/api'
 import { StatusBadge } from '../components/StatusBadge'
+import { EvseFilterGroups } from '../components/EvseFilterGroups'
 import { SkeletonTable } from '../components/Skeleton'
 import { RefreshCw } from 'lucide-react'
 
@@ -47,7 +48,6 @@ export function ConnectivityTab() {
   const offlineCount = chargers.length - onlineCount
 
   // ── History filter state ──────────────────────────────────────────────────
-  const allEvseIds = chargers.map(c => c.station_id)
   const [startDate,      setStartDate]      = useState(daysAgoAK(7))
   const [endDate,        setEndDate]        = useState(todayAK())
   const [selectedEvses,  setSelectedEvses]  = useState<string[]>([])   // [] = all
@@ -73,11 +73,6 @@ export function ConnectivityTab() {
     reconnectCounts[e.evse_name] = (reconnectCounts[e.evse_name] ?? 0) + 1
   }
 
-  function toggleEvse(sid: string) {
-    setSelectedEvses(prev =>
-      prev.includes(sid) ? prev.filter(x => x !== sid) : [...prev, sid]
-    )
-  }
 
   const inputCls = 'px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
 
@@ -172,33 +167,15 @@ export function ConnectivityTab() {
               <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className={inputCls} />
             </div>
 
-            {/* EVSE multi-select */}
-            {allEvseIds.length > 0 && (
+            {/* EVSE multi-select — grouped by site */}
+            {chargers.length > 0 && (
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">EVSE</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {chargers.map(c => (
-                    <button
-                      key={c.station_id}
-                      onClick={() => toggleEvse(c.station_id)}
-                      className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
-                        selectedEvses.includes(c.station_id) || selectedEvses.length === 0
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
-                      }`}
-                    >
-                      {c.evse_name}
-                    </button>
-                  ))}
-                  {selectedEvses.length > 0 && (
-                    <button
-                      onClick={() => setSelectedEvses([])}
-                      className="px-2.5 py-1.5 rounded-lg border border-gray-200 text-xs text-gray-500 hover:border-gray-400"
-                    >
-                      All
-                    </button>
-                  )}
-                </div>
+                <EvseFilterGroups
+                  options={chargers.map(c => ({ id: c.station_id, name: c.evse_name, location: c.location }))}
+                  selected={selectedEvses}
+                  onChange={setSelectedEvses}
+                />
               </div>
             )}
 

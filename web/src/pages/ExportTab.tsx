@@ -7,6 +7,7 @@
 import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { buildExportUrl, buildMaintenanceExportUrl, fetchEvseOptions, EVSE_OPTIONS_FALLBACK } from '../lib/api'
+import { EvseFilterGroups } from '../components/EvseFilterGroups'
 import { supabase } from '../lib/supabase'
 import { Download, Loader2 } from 'lucide-react'
 
@@ -54,13 +55,6 @@ function ExportCard({ title, initialFilters, carriedOver, buildUrl, filePrefix, 
     staleTime: 5 * 60_000,
   })
 
-  function toggleEvse(id: string) {
-    setStationIds(prev =>
-      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
-    )
-  }
-
-  const allSelected = stationIds.length === 0
 
   const handleDownload = async () => {
     setLoading(true)
@@ -129,34 +123,11 @@ function ExportCard({ title, initialFilters, carriedOver, buildUrl, filePrefix, 
 
         <div>
           <label className="block text-xs font-medium text-gray-500 mb-1">EVSE</label>
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              onClick={() => setStationIds([])}
-              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                allSelected
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'
-              }`}
-            >
-              All
-            </button>
-            {EVSE_OPTIONS.map(ev => {
-              const selected = stationIds.includes(ev.id)
-              return (
-                <button
-                  key={ev.id}
-                  onClick={() => toggleEvse(ev.id)}
-                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                    selected
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'
-                  }`}
-                >
-                  {ev.name}
-                </button>
-              )
-            })}
-          </div>
+          <EvseFilterGroups
+            options={EVSE_OPTIONS}
+            selected={stationIds}
+            onChange={setStationIds}
+          />
         </div>
       </div>
 

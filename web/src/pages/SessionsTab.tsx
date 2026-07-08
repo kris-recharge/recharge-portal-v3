@@ -13,6 +13,7 @@ import { SkeletonKPIRow, SkeletonTable } from '../components/Skeleton'
 import { SessionDetailModal } from '../components/SessionDetailModal'
 import { DailyTotalsCharts } from '../components/DailyTotalsCharts'
 import { SessionDensityHeatmap } from '../components/SessionDensityHeatmap'
+import { EvseFilterGroups } from '../components/EvseFilterGroups'
 import { Zap, Clock, DollarSign, Activity, Filter, X, Radio, Gauge, TrendingUp } from 'lucide-react'
 
 const PAGE_SIZE = 100
@@ -134,23 +135,12 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
     }
   }
 
-  // ── EVSE pill toggle ───────────────────────────────────────────────────────
-  function toggleEvse(id: string) {
-    const newIds = draft.stationIds.includes(id)
-      ? draft.stationIds.filter(s => s !== id)
-      : [...draft.stationIds, id]
+  // ── EVSE selection (site-grouped pills) ────────────────────────────────────
+  function setEvseSelection(newIds: string[]) {
     setDraft(prev => ({ ...prev, stationIds: newIds }))
     // In live mode EVSE changes apply immediately (no Apply button needed)
     if (draft.isLive) {
       setApplied(prev => ({ ...prev, stationIds: newIds }))
-      setPage(1)
-    }
-  }
-
-  function selectAllEvse() {
-    setDraft(prev => ({ ...prev, stationIds: [] }))
-    if (draft.isLive) {
-      setApplied(prev => ({ ...prev, stationIds: [] }))
       setPage(1)
     }
   }
@@ -218,8 +208,6 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
   const avgDuration  = data?.avg_duration_min  ?? null
   const avgDispensed = completed > 0 ? totalEnergy / completed : null
 
-  const allEvseSelected = draft.stationIds.length === 0
-
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
@@ -262,37 +250,14 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
           {/* Divider */}
           <div className="hidden sm:block h-8 w-px bg-gray-200 self-end mb-0.5" />
 
-          {/* EVSE toggles */}
+          {/* EVSE toggles — grouped by site */}
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">EVSE</label>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                onClick={selectAllEvse}
-                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                  allEvseSelected
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'
-                }`}
-              >
-                All
-              </button>
-              {EVSE_OPTIONS.map(ev => {
-                const selected = draft.stationIds.includes(ev.id)
-                return (
-                  <button
-                    key={ev.id}
-                    onClick={() => toggleEvse(ev.id)}
-                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                      selected
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'
-                    }`}
-                  >
-                    {ev.name}
-                  </button>
-                )
-              })}
-            </div>
+            <EvseFilterGroups
+              options={EVSE_OPTIONS}
+              selected={draft.stationIds}
+              onChange={setEvseSelection}
+            />
           </div>
 
           {/* Divider */}

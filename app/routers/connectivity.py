@@ -80,7 +80,8 @@ async def get_connectivity(user: CurrentUser):
     mv_latest:   dict[str, datetime] = {r["asset_id"]: r["last_mv"] for r in mv_rows}
 
     chargers: list[ConnectivityRecord] = []
-    for sid in sorted(allowed):
+    # Site first, then name — keeps sister EVSEs (CL-A..D, Delta L/R, ARG L/R) adjacent
+    for sid in sorted(allowed, key=lambda s: (location_label(s), display_name(s))):
         ocpp_rec      = ocpp_latest.get(sid)
         last_ocpp     = ocpp_rec["received_at"] if ocpp_rec else None
         last_action   = ocpp_rec["action"]       if ocpp_rec else None

@@ -57,8 +57,47 @@ export function StatusTab() {
           </span>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full data-table table-fixed">
+        {/* Mobile: stacked cards so the description gets full width */}
+        <div className="md:hidden divide-y divide-gray-100">
+          {isLoading ? (
+            <div className="p-4 space-y-4">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="space-y-2">
+                  <div className="skeleton h-4 w-1/2 rounded" />
+                  <div className="skeleton h-3 w-full rounded" />
+                </div>
+              ))}
+            </div>
+          ) : events.length === 0 ? (
+            <div className="text-center text-gray-400 py-12 text-sm">No fault events found</div>
+          ) : (
+            events.map(e => (
+              <div key={e.id} className="px-4 py-3 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <StatusBadge status={e.status} />
+                  <span className="font-mono text-xs text-gray-400">{e.received_at_ak}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span className="font-medium text-gray-900">
+                    {e.evse_name}
+                    {e.connector_id != null && <span className="text-gray-400 font-normal"> · conn {e.connector_id}</span>}
+                  </span>
+                  <span className="font-mono text-xs text-red-600 whitespace-nowrap">
+                    {e.error_code || '—'}
+                    {e.vendor_error_code && <span className="text-gray-500"> / {e.vendor_error_code}</span>}
+                  </span>
+                </div>
+                {e.vendor_error_description && (
+                  <p className="text-xs text-gray-600 leading-snug">{e.vendor_error_description}</p>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Desktop: full table (min-width keeps the description column readable) */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full data-table table-fixed min-w-[52rem]">
             <colgroup>
               <col className="w-44" />
               <col className="w-28" />

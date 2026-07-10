@@ -278,13 +278,34 @@ async def export_sessions(
                                                      AND a.episode_end
                         )
                         OR EXISTS (   -- (2b) the charger raised an auth-timeout fault
-                                      -- (Tritium 824, Alpitronic 23)
+                                      -- (Tritium 824, Alpitronic 23) — stands alone
                             SELECT 1 FROM ocpp_events ft
                             WHERE ft.asset_id = a.station_id
                               AND ft.action = 'StatusNotification'
                               AND ft.action_payload->>'vendorErrorCode' IN ('824', '23')
                               AND ft.connector_id IS NOT DISTINCT FROM a.connector_id
                               AND ft.received_at BETWEEN a.attempt_at AND a.episode_end
+                        )
+                        OR (          -- (2c) an authorization exchange began (ANY
+                                      -- Authorize, VID probes included) and the
+                                      -- connector Faulted before charging — covers
+                                      -- Tritium's pre-charge failure family
+                                      -- (62/63/74/823/869/873/875...) w/o a code list
+                            EXISTS (
+                                SELECT 1 FROM ocpp_events ft
+                                WHERE ft.asset_id = a.station_id
+                                  AND ft.action = 'StatusNotification'
+                                  AND ft.action_payload->>'status' = 'Faulted'
+                                  AND ft.connector_id IS NOT DISTINCT FROM a.connector_id
+                                  AND ft.received_at BETWEEN a.attempt_at AND a.episode_end
+                            )
+                            AND EXISTS (
+                                SELECT 1 FROM ocpp_events az2
+                                WHERE az2.asset_id = a.station_id
+                                  AND az2.action = 'Authorize'
+                                  AND az2.received_at BETWEEN a.attempt_at - INTERVAL '30 seconds'
+                                                          AND a.episode_end
+                            )
                         )
                     )
             ),

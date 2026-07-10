@@ -300,8 +300,8 @@ async def get_sessions(
                         -- authorization arrived within its timeout after plug-in.
                         -- Tritium vendor code 824; Alpitronic 23 "Authorization Timeout"
                         -- (Tritium's own 23 is "Not used", so no cross-vendor collision).
-                        -- Ordinary plug/unplug blips and successful AutoCharge starts
-                        -- never produce these codes.
+                        -- These stand alone — the charger itself asserts a driver
+                        -- plugged in and never got authorized, even with no Authorize.
                         OR EXISTS (
                             SELECT 1 FROM ocpp_events ft
                             WHERE ft.asset_id = a.station_id
@@ -309,6 +309,31 @@ async def get_sessions(
                               AND ft.action_payload->>'vendorErrorCode' IN ('824', '23')
                               AND ft.connector_id IS NOT DISTINCT FROM a.connector_id
                               AND ft.received_at BETWEEN a.attempt_at AND a.episode_end
+                        )
+                        -- (2c) or an authorization exchange began (ANY Authorize,
+                        -- VID probes included) and the connector Faulted before
+                        -- charging.  Tritium has a whole family of pre-charge
+                        -- failure codes (62/63/74/823/869/873/875...) so no code
+                        -- allowlist: any fault after a handshake started marks a
+                        -- real driver who failed to start.  The Authorize
+                        -- requirement keeps out driverless hardware faults and
+                        -- plug/unplug blips.
+                        OR (
+                            EXISTS (
+                                SELECT 1 FROM ocpp_events ft
+                                WHERE ft.asset_id = a.station_id
+                                  AND ft.action = 'StatusNotification'
+                                  AND ft.action_payload->>'status' = 'Faulted'
+                                  AND ft.connector_id IS NOT DISTINCT FROM a.connector_id
+                                  AND ft.received_at BETWEEN a.attempt_at AND a.episode_end
+                            )
+                            AND EXISTS (
+                                SELECT 1 FROM ocpp_events az2
+                                WHERE az2.asset_id = a.station_id
+                                  AND az2.action = 'Authorize'
+                                  AND az2.received_at BETWEEN a.attempt_at - INTERVAL '30 seconds'
+                                                          AND a.episode_end
+                            )
                         )
                     )
             ),

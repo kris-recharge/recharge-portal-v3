@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import io
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -51,23 +52,29 @@ def _pct(val) -> str:
     return f"{float(val):.0f}%"
 
 
-_CC_TAGS = {"FE6DD7B2C3904F", "161D77C442099C"}
+def _auth_method(start_tag: str) -> str:
+    """Derive Authentication Method from the StartTransaction idTag.
 
+    The tag that STARTED the transaction is the only reliable signal — Authorize
+    events near session start include rejected AutoCharge probes (Autel sends a
+    VID: Authorize on every plug-in) and so mislabel CC sessions. Validated at
+    100% (57/57) against Kris's hand-corrected Autel export (2026-07-13).
 
-def _auth_method(auth_tag: str) -> str:
-    """Derive Authentication Method from the raw auth tag.
-
-    VID:*  → AutoCharge (vehicle-initiated via Autocharge protocol)
-    known CC tag IDs → CC
-    anything else    → App
+    VID:*                      → AutoCharge (vehicle-initiated)
+    20-char A-Z/0-9 token      → App (LynkWell remote-start idTag)
+    anything else              → CC (each unit's payment terminal presents one
+                                 fixed tag, e.g. F20AA7178114D0 = Glennallen,
+                                 FE6DD7B2C3904F = ARG-Left; RFID cards land
+                                 here too)
+    blank (no StartTransaction) → unknown, left blank
     """
-    if not auth_tag:
-        return "App"
-    if auth_tag.startswith("VID:"):
+    if not start_tag:
+        return ""
+    if start_tag.startswith("VID:"):
         return "AutoCharge"
-    if auth_tag in _CC_TAGS:
-        return "CC"
-    return "App"
+    if re.fullmatch(r"[0-9A-Z]{20}", start_tag):
+        return "App"
+    return "CC"
 
 
 @router.get("")
@@ -142,12 +149,29 @@ async def export_sessions(
             with_auth AS (
                 SELECT
                     s.*,
-                    -- Authentication: raw id_tag from authorize_methods (all methods)
-                    (SELECT a.id_tag FROM authorize_methods a
-                     WHERE a.asset_id = s.station_id
-                       AND a.start_received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
-                                                   AND s.start_utc + INTERVAL '5 minutes'
-                     ORDER BY ABS(EXTRACT(EPOCH FROM (a.start_received_at - s.start_utc))) ASC
+                    -- Authentication: the idTag that actually STARTED the session,
+                    -- from the StartTransaction CALL on the same connector. (v3.2:
+                    -- was the nearest Authorize via authorize_methods, which
+                    -- mislabeled Autel CC sessions — Autel probes AutoCharge with a
+                    -- VID: Authorize on EVERY plug-in, gets rejected unless the
+                    -- vehicle is enrolled, then starts the transaction with its
+                    -- payment terminal's fixed tag after the card tap.)
+                    -- Match on the charger-stamped payload timestamp, not
+                    -- received_at: an offline charger buffers StartTransaction and
+                    -- replays it minutes later (seen 12 min late on Delta-Right
+                    -- 2026-06-12). The coarse received_at bound keeps the index.
+                    (SELECT oe.action_payload->>'idTag'
+                     FROM ocpp_events oe
+                     WHERE oe.asset_id = s.station_id
+                       AND oe.action   = 'StartTransaction'
+                       AND (oe.action_payload->>'connectorId')::int = s.connector_id
+                       AND oe.received_at BETWEEN s.start_utc - INTERVAL '15 minutes'
+                                              AND s.start_utc + INTERVAL '24 hours'
+                       AND (oe.action_payload->>'timestamp')::timestamptz
+                             BETWEEN s.start_utc - INTERVAL '5 minutes'
+                                 AND s.start_utc + INTERVAL '5 minutes'
+                     ORDER BY ABS(EXTRACT(EPOCH FROM (
+                         (oe.action_payload->>'timestamp')::timestamptz - s.start_utc))) ASC
                      LIMIT 1) AS auth_tag,
                     -- VID: only VID:-prefixed tags from ocpp_events Authorize
                     (SELECT oe.action_payload->>'idTag'

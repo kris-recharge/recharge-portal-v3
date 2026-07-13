@@ -165,10 +165,14 @@ async def export_sessions(
                      WHERE oe.asset_id = s.station_id
                        AND oe.action   = 'StartTransaction'
                        AND (oe.action_payload->>'connectorId')::int = s.connector_id
-                       AND oe.received_at BETWEEN s.start_utc - INTERVAL '15 minutes'
+                       -- Lower bound is 6 h (not minutes): a session straddling
+                       -- the export window's start has start_utc truncated to the
+                       -- window edge, so its StartTransaction fired earlier. The
+                       -- nearest-first ORDER BY still picks the right transaction.
+                       AND oe.received_at BETWEEN s.start_utc - INTERVAL '6 hours'
                                               AND s.start_utc + INTERVAL '24 hours'
                        AND (oe.action_payload->>'timestamp')::timestamptz
-                             BETWEEN s.start_utc - INTERVAL '5 minutes'
+                             BETWEEN s.start_utc - INTERVAL '6 hours'
                                  AND s.start_utc + INTERVAL '5 minutes'
                      ORDER BY ABS(EXTRACT(EPOCH FROM (
                          (oe.action_payload->>'timestamp')::timestamptz - s.start_utc))) ASC

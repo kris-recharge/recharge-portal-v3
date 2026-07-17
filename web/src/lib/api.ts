@@ -69,6 +69,10 @@ export interface ChargingSession {
   soc_end: number | null
   id_tag: string | null
   est_revenue_usd: number | null
+  // v3.3 Payter: committed CCR amount (replaces the estimate when present)
+  // and card entry mode (CONTACTLESS / CONTACT / magstripe).
+  actual_revenue_usd: number | null
+  payter_ifd: string | null
 }
 
 export interface SessionsResponse {

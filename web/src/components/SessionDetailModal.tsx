@@ -163,8 +163,13 @@ export function SessionDetailModal({ session: s, onClose }: Props) {
           {socStart != null && socEnd != null && (
             <Stat icon={<Battery size={14} />} label="SoC"        value={`${socStart.toFixed(0)} → ${socEnd.toFixed(0)} %`} />
           )}
-          {s.est_revenue_usd != null && (
+          {s.actual_revenue_usd != null ? (
+            <Stat icon={<span className="text-xs font-bold">$</span>} label="Revenue (card)" value={`$${s.actual_revenue_usd.toFixed(2)}`} />
+          ) : s.est_revenue_usd != null ? (
             <Stat icon={<span className="text-xs font-bold">$</span>} label="Est. Revenue" value={`$${(Math.floor(s.est_revenue_usd * 100) / 100).toFixed(2)}`} />
+          ) : null}
+          {s.payter_ifd != null && (
+            <Stat icon={<span className="text-xs font-bold">💳</span>} label="Card Entry" value={s.payter_ifd.charAt(0) + s.payter_ifd.slice(1).toLowerCase()} />
           )}
         </div>
 

@@ -77,6 +77,18 @@ def _auth_method(start_tag: str) -> str:
     return "CC"
 
 
+# v3.3: Payter `ifd` (interface device) → export label. Values observed live:
+# CONTACTLESS, CONTACT. Magstripe hasn't appeared in Data API rows yet, so
+# unknown values pass through title-cased until the real enum shows up.
+_IFD_LABELS = {"CONTACTLESS": "Contactless", "CONTACT": "Contact (chip)"}
+
+
+def _card_entry(ifd: str | None) -> str:
+    if not ifd:
+        return ""
+    return _IFD_LABELS.get(ifd, ifd.title())
+
+
 @router.get("")
 async def export_sessions(
     user: CurrentUser,
@@ -188,7 +200,11 @@ async def export_sessions(
                      ORDER BY ABS(EXTRACT(EPOCH FROM (oe.received_at - s.start_utc))) ASC
                      LIMIT 1) AS vid_tag,
                     ep.price_per_kwh,
-                    ep.connection_fee
+                    ep.connection_fee,
+                    -- v3.3 Payter: committed CCR amount + card entry mode for
+                    -- card-initiated sessions (matcher-populated link table).
+                    pay.committed_amount                AS payter_amount_cents,
+                    pay.ifd                             AS payter_ifd
                 FROM sessions s
                 LEFT JOIN LATERAL (
                     SELECT price_per_kwh, connection_fee
@@ -198,6 +214,15 @@ async def export_sessions(
                       AND (effective_end IS NULL OR effective_end > s.start_utc)
                     ORDER BY effective_start DESC LIMIT 1
                 ) ep ON true
+                LEFT JOIN LATERAL (
+                    SELECT pt.committed_amount, pt.ifd
+                    FROM payter_session_matches pm
+                    JOIN payter_transactions pt ON pt.payter_id = pm.payter_id
+                    WHERE pm.station_id = s.station_id
+                      AND pm.connector_id IS NOT DISTINCT FROM s.connector_id
+                      AND pm.transaction_id = s.transaction_id::text
+                    LIMIT 1
+                ) pay ON true
             ),
             real_rows AS (
                 SELECT
@@ -215,7 +240,9 @@ async def export_sessions(
                     auth_tag,
                     vid_tag,
                     price_per_kwh::numeric              AS price_per_kwh,
-                    connection_fee::numeric            AS connection_fee
+                    connection_fee::numeric            AS connection_fee,
+                    payter_amount_cents::numeric        AS payter_amount_cents,
+                    payter_ifd
                 FROM with_auth
                 WHERE start_utc <= $3   -- v3.2: keep only sessions that START in range
             ),
@@ -367,7 +394,9 @@ async def export_sessions(
                                               AND f.episode_end
                      ORDER BY az.received_at ASC LIMIT 1) AS vid_tag,
                     NULL::numeric                       AS price_per_kwh,
-                    NULL::numeric                       AS connection_fee
+                    NULL::numeric                       AS connection_fee,
+                    NULL::numeric                       AS payter_amount_cents,
+                    NULL::text                          AS payter_ifd
                 FROM attempts_filtered f
             ),
             unioned AS (
@@ -468,6 +497,8 @@ async def export_sessions(
         "Authentication Method",  # N
         "Est. Revenue (USD)",     # O
         "VID",                    # P
+        "Actual Revenue (USD)",   # Q — v3.3: Payter CCR committed amount
+        "Card Entry",             # R — v3.3: Contactless / Contact / Magstripe
     ]
 
     data_rows: list[list] = []
@@ -531,6 +562,9 @@ async def export_sessions(
             "" if is_failed else _auth_method(r["auth_tag"] or ""), # N — Authentication Method
             est_rev,                                    # O — Est. Revenue
             r["vid_tag"] or "",                         # P — VID (VID:-prefixed only)
+            (round(float(r["payter_amount_cents"]) / 100.0, 2)
+             if r["payter_amount_cents"] is not None else ""),  # Q — Actual Revenue (Payter)
+            _card_entry(r["payter_ifd"]),               # R — Card Entry
         ])
 
     # ── Build faults rows ─────────────────────────────────────────────────────

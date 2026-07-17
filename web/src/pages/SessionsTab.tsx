@@ -391,11 +391,11 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
             subtitle="across filtered results"
           />
           <KPICard
-            title="Est. Revenue"
+            title="Revenue"
             value={`$${totalRevenue.toFixed(2)}`}
             icon={<DollarSign size={16} />}
             color="amber"
-            subtitle="across filtered results"
+            subtitle="actual where known, est. otherwise"
           />
           <KPICard
             title="Avg Duration"
@@ -499,7 +499,7 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
                 <th>SoC Start</th>
                 <th>SoC End</th>
                 <th>VID</th>
-                <th>Est. Revenue</th>
+                <th>Revenue</th>
               </tr>
             </thead>
             <tbody>
@@ -621,7 +621,20 @@ function SessionRow({
         {s.id_tag?.startsWith('VID:') ? s.id_tag : ''}
       </td>
       <td className="tabular-nums text-emerald-700 font-medium">
-        {s.est_revenue_usd != null ? `$${(Math.floor(s.est_revenue_usd * 100) / 100).toFixed(2)}` : '—'}
+        {/* v3.3: Payter-committed amount when the session was card-initiated
+            and matched; otherwise the price-sheet estimate, marked "est." */}
+        {s.actual_revenue_usd != null ? (
+          <span title={`Payter committed amount${s.payter_ifd ? ` — ${s.payter_ifd.toLowerCase()}` : ''}`}>
+            {`$${s.actual_revenue_usd.toFixed(2)}`}
+          </span>
+        ) : s.est_revenue_usd != null ? (
+          <span className="text-gray-500" title="Estimated from price sheet — no card terminal record">
+            {`$${(Math.floor(s.est_revenue_usd * 100) / 100).toFixed(2)}`}
+            <span className="ml-1 text-[10px] text-gray-400 align-middle">est.</span>
+          </span>
+        ) : (
+          '—'
+        )}
       </td>
     </tr>
   )

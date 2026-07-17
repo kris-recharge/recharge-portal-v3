@@ -176,8 +176,21 @@ async def get_sessions(
                      WHERE ep.station_id = s.station_id
                        AND ep.effective_start <= s.start_utc
                        AND (ep.effective_end IS NULL OR ep.effective_end > s.start_utc)
-                     ORDER BY ep.effective_start DESC LIMIT 1) AS connection_fee
+                     ORDER BY ep.effective_start DESC LIMIT 1) AS connection_fee,
+                    -- v3.3 Payter: committed CCR amount + card entry mode for
+                    -- card-initiated sessions (matcher-populated link table).
+                    pay.committed_amount                       AS payter_amount_cents,
+                    pay.ifd                                    AS payter_ifd
                 FROM sessions s
+                LEFT JOIN LATERAL (
+                    SELECT pt.committed_amount, pt.ifd
+                    FROM payter_session_matches pm
+                    JOIN payter_transactions pt ON pt.payter_id = pm.payter_id
+                    WHERE pm.station_id = s.station_id
+                      AND pm.connector_id IS NOT DISTINCT FROM s.connector_id
+                      AND pm.transaction_id = s.transaction_id::text
+                    LIMIT 1
+                ) pay ON true
             ),
             real_rows AS (
                 SELECT
@@ -194,7 +207,9 @@ async def get_sessions(
                     soc_end::numeric                    AS soc_end,
                     id_tag,
                     price_per_kwh::numeric              AS price_per_kwh,
-                    connection_fee::numeric             AS connection_fee
+                    connection_fee::numeric             AS connection_fee,
+                    payter_amount_cents::numeric        AS payter_amount_cents,
+                    payter_ifd
                 FROM with_auth
                 WHERE ($3::timestamptz IS NULL OR start_utc <= $3)  -- v3.2: START in range
             ),
@@ -360,7 +375,9 @@ async def get_sessions(
                                               AND f.episode_end
                      ORDER BY az.received_at ASC LIMIT 1) AS id_tag,
                     NULL::numeric                       AS price_per_kwh,
-                    NULL::numeric                       AS connection_fee
+                    NULL::numeric                       AS connection_fee,
+                    NULL::numeric                       AS payter_amount_cents,
+                    NULL::text                          AS payter_ifd
                 FROM attempts_filtered f
             ),
             unioned AS (
@@ -372,11 +389,16 @@ async def get_sessions(
                    COUNT(*) OVER()                                              AS total_count,
                    COUNT(*) FILTER (WHERE kind = 'session') OVER()              AS completed_count,
                    SUM(energy_wh_delta) FILTER (WHERE kind = 'session') OVER()  AS agg_energy_wh,
+                   -- v3.3: prefer the Payter-committed amount per session,
+                   -- falling back to the price-sheet estimate.
                    SUM(
                        CASE WHEN kind = 'session'
-                                 AND (price_per_kwh IS NOT NULL OR connection_fee IS NOT NULL)
-                            THEN COALESCE(connection_fee, 0)
-                                 + (energy_wh_delta / 1000.0) * COALESCE(price_per_kwh, 0)
+                            THEN COALESCE(
+                                payter_amount_cents / 100.0,
+                                CASE WHEN price_per_kwh IS NOT NULL OR connection_fee IS NOT NULL
+                                     THEN COALESCE(connection_fee, 0)
+                                          + (energy_wh_delta / 1000.0) * COALESCE(price_per_kwh, 0)
+                                     ELSE 0 END)
                             ELSE 0 END
                    ) OVER()                                                     AS agg_revenue,
                    AVG(EXTRACT(EPOCH FROM (end_utc - start_utc)) / 60.0)
@@ -416,6 +438,9 @@ async def get_sessions(
         c_fee   = float(r["connection_fee"] or 0)
         est_rev = math.floor((c_fee + (energy_kwh or 0) * p_kwh) * 100) / 100 if (p_kwh or c_fee) else None
 
+        pay_cents  = r["payter_amount_cents"]
+        actual_rev = round(float(pay_cents) / 100.0, 2) if pay_cents is not None else None
+
         soc_start_pct, soc_end_pct = _resolve_soc(
             r["soc_start"], r["soc_first_nonzero"], r["soc_end"]
         )
@@ -440,6 +465,8 @@ async def get_sessions(
                 soc_end         = soc_end_pct,
                 id_tag          = r["id_tag"],
                 est_revenue_usd = est_rev,
+                actual_revenue_usd = actual_rev,
+                payter_ifd      = r["payter_ifd"],
             )
         )
 

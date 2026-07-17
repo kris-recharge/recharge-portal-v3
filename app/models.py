@@ -27,6 +27,11 @@ class ChargingSession(BaseModel):
     soc_end: int | None
     id_tag: str | None
     est_revenue_usd: float | None
+    # v3.3 Payter: the CCR's committed amount for this session (None when the
+    # session wasn't card-initiated or no match exists) and the card entry
+    # mode (CONTACTLESS / CONTACT / magstripe).
+    actual_revenue_usd: float | None = None
+    payter_ifd: str | None = None
 
 
 class SessionsResponse(BaseModel):

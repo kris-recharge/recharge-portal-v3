@@ -22,9 +22,11 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from ..db import get_pool
 from .mymeterq import MyMeterQCollector
+from .payter import collect_payter
 from .smarthub import SmartHubCollector
 
 logger = logging.getLogger("rca.collectors.scheduler")
@@ -120,6 +122,16 @@ async def run_all_collectors(days_back: int = 2) -> None:
     logger.info("Collector run complete")
 
 
+async def run_payter_collector() -> None:
+    """Incremental Payter CCR transaction import (see payter.py)."""
+    pool = await get_pool()
+    try:
+        n = await collect_payter(pool)
+        logger.info("Payter collector run complete: %d transactions upserted", n)
+    except Exception:
+        logger.error("Payter collector run failed", exc_info=True)
+
+
 # ── Scheduler setup ───────────────────────────────────────────────────────────
 
 _scheduler: AsyncIOScheduler | None = None
@@ -142,9 +154,19 @@ def start_collector_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=3600,  # run up to 1h late if server was down
     )
+    _scheduler.add_job(
+        run_payter_collector,
+        # 15-min polling ≈ near-real-time: committed cost lands minutes after
+        # the CC session closes. Each poll is one cheap "anything new?" request.
+        trigger=IntervalTrigger(minutes=15),
+        id="payter_collect_15min",
+        name="Payter CCR transaction import (15 min)",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
     _scheduler.start()
     logger.info(
-        "Utility collector scheduler started — runs daily at 04:00 AK time"
+        "Collector scheduler started — utilities daily 04:00 AK, Payter every 15 min"
     )
 
 

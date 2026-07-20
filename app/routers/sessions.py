@@ -35,24 +35,45 @@ def _resolve_soc(
     raw_start:         float | None,
     raw_first_nonzero: float | None,
     raw_end:           float | None,
+    raw_last_nonzero:  float | None = None,
 ) -> tuple[float | None, float | None]:
-    """Return (soc_start_pct, soc_end_pct) with two corrections applied.
+    """Return (soc_start_pct, soc_end_pct) with three corrections applied.
 
     1. Scale normalisation — some chargers report SoC as a 0-1 fraction instead
-       of 0-100.  If the session-end value is ≤ 1.0 we multiply by 100.
+       of 0-100.  The scale is derived from a *genuine* (non-zero) reading:
+       a 0% reading carries no scale information, so basing the decision on it
+       (e.g. a bogus soc_end=0) would wrongly treat 0 ≤ 1.0 as fraction-scale
+       and multiply real readings by 100 (turning a 24% start into 2400%).
 
-    2. Bogus-zero filter — chargers often emit one or more soc=0 readings at
-       session start before the BMS has responded.  Rule: if the first reading
-       is 0% AND the first *non-zero* reading is NOT ≈ 1% (i.e. the car was
-       not actually near-depleted), discard all leading zeros and use the first
-       non-zero reading as the true starting SoC.  If soc_first_nonzero ≤ 1.5%
-       we assume the car genuinely started near-empty and keep 0%.
+    2. Leading bogus-zero filter — chargers often emit one or more soc=0
+       readings at session start before the BMS has responded.  Rule: if the
+       first reading is 0% AND the first *non-zero* reading is NOT ≈ 1% (i.e.
+       the car was not actually near-depleted), discard the leading zeros and
+       use the first non-zero reading as the true starting SoC.  If
+       soc_first_nonzero ≤ 1.5% we assume the car genuinely started near-empty
+       and keep 0%.
+
+    3. Trailing bogus-zero filter — symmetric to (2): some chargers emit a
+       soc=0 reading at session teardown after the BMS has disconnected.  A
+       charging session can never legitimately *end* at 0%, so if the last
+       reading is 0% we fall back to the last non-zero reading for the end.
     """
-    # Pick scale from the most-reliable reference: soc_end, then soc_start
-    ref = raw_end if raw_end is not None else raw_start
-    scale = 100.0 if (ref is not None and float(ref) <= 1.0) else 1.0
+    # Scale from the most-reliable *non-zero* reference. Prefer the last
+    # non-zero reading (highest SoC, end of charge), then first non-zero,
+    # then the raw endpoints — skipping any 0 which tells us nothing.
+    ref = next(
+        (float(v) for v in (raw_last_nonzero, raw_first_nonzero, raw_end, raw_start)
+         if v is not None and float(v) > 0.0),
+        None,
+    )
+    scale = 100.0 if (ref is not None and ref <= 1.0) else 1.0
 
-    soc_end_pct = round(float(raw_end) * scale, 1) if raw_end is not None else None
+    # Trailing-zero artifact: a 0% end is a teardown reading, not a real SoC.
+    raw_end_eff = raw_end
+    if raw_end is not None and float(raw_end) == 0.0 and raw_last_nonzero is not None:
+        raw_end_eff = raw_last_nonzero
+
+    soc_end_pct = round(float(raw_end_eff) * scale, 1) if raw_end_eff is not None else None
 
     if raw_start is None:
         return None, soc_end_pct
@@ -145,7 +166,14 @@ async def get_sessions(
                        AND mv2.connector_id = m.connector_id
                        AND mv2.transaction_id = m.transaction_id
                        AND mv2.soc IS NOT NULL
-                     ORDER BY mv2.ts DESC LIMIT 1)                    AS soc_end
+                     ORDER BY mv2.ts DESC LIMIT 1)                    AS soc_end,
+                    (SELECT mv2.soc FROM meter_values_parsed mv2
+                     WHERE mv2.station_id = m.station_id
+                       AND mv2.connector_id = m.connector_id
+                       AND mv2.transaction_id = m.transaction_id
+                       AND mv2.soc IS NOT NULL
+                       AND mv2.soc > 0
+                     ORDER BY mv2.ts DESC LIMIT 1)                    AS soc_last_nonzero
                 FROM meter_values_parsed m
                 WHERE m.station_id = ANY($1::text[])
                   AND m.transaction_id IS NOT NULL
@@ -205,6 +233,7 @@ async def get_sessions(
                     soc_start::numeric                  AS soc_start,
                     soc_first_nonzero::numeric          AS soc_first_nonzero,
                     soc_end::numeric                    AS soc_end,
+                    soc_last_nonzero::numeric           AS soc_last_nonzero,
                     id_tag,
                     price_per_kwh::numeric              AS price_per_kwh,
                     connection_fee::numeric             AS connection_fee,
@@ -366,6 +395,7 @@ async def get_sessions(
                     NULL::numeric                       AS soc_start,
                     NULL::numeric                       AS soc_first_nonzero,
                     NULL::numeric                       AS soc_end,
+                    NULL::numeric                       AS soc_last_nonzero,
                     -- Surface the credential that failed (e.g. the rejected
                     -- AutoCharge VID) so repeat offenders are visible in the table.
                     (SELECT az.action_payload->>'idTag' FROM ocpp_events az
@@ -442,7 +472,7 @@ async def get_sessions(
         actual_rev = round(float(pay_cents) / 100.0, 2) if pay_cents is not None else None
 
         soc_start_pct, soc_end_pct = _resolve_soc(
-            r["soc_start"], r["soc_first_nonzero"], r["soc_end"]
+            r["soc_start"], r["soc_first_nonzero"], r["soc_end"], r["soc_last_nonzero"]
         )
 
         status = "completed" if r["kind"] == "session" else "failed_start"

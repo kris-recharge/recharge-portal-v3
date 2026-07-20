@@ -21,6 +21,7 @@ from ..auth import CurrentUser, filter_evse_ids
 from ..config import DEV_BYPASS_AUTH
 from ..constants import connector_type_for, display_name, get_all_station_ids, location_label
 from ..db import acquire
+from .sessions import _resolve_soc  # shared SoC scale + bogus-zero correction
 from .utility import ADMIN_EMAIL, UTILITY_EFFICIENCY_SQL  # v3.2: shared metered-vs-dispensed query
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -147,7 +148,15 @@ async def export_sessions(
                        AND mv2.connector_id  = m.connector_id
                        AND mv2.transaction_id = m.transaction_id
                        AND mv2.soc IS NOT NULL
-                     ORDER BY mv2.ts DESC LIMIT 1)          AS soc_end
+                     ORDER BY mv2.ts DESC LIMIT 1)          AS soc_end,
+                    -- last non-zero SoC reading (used to skip bogus trailing 0%)
+                    (SELECT mv2.soc FROM meter_values_parsed mv2
+                     WHERE mv2.station_id    = m.station_id
+                       AND mv2.connector_id  = m.connector_id
+                       AND mv2.transaction_id = m.transaction_id
+                       AND mv2.soc IS NOT NULL
+                       AND mv2.soc > 0
+                     ORDER BY mv2.ts DESC LIMIT 1)          AS soc_last_nonzero
                 FROM meter_values_parsed m
                 WHERE m.station_id     = ANY($1::text[])
                   AND m.transaction_id IS NOT NULL
@@ -237,6 +246,7 @@ async def export_sessions(
                     soc_start::numeric                  AS soc_start,
                     soc_first_nonzero::numeric          AS soc_first_nonzero,
                     soc_end::numeric                    AS soc_end,
+                    soc_last_nonzero::numeric           AS soc_last_nonzero,
                     auth_tag,
                     vid_tag,
                     price_per_kwh::numeric              AS price_per_kwh,
@@ -378,6 +388,7 @@ async def export_sessions(
                     NULL::numeric                       AS soc_start,
                     NULL::numeric                       AS soc_first_nonzero,
                     NULL::numeric                       AS soc_end,
+                    NULL::numeric                       AS soc_last_nonzero,
                     -- Surface the credential that failed (e.g. the rejected
                     -- AutoCharge VID) so repeat offenders are visible in the export.
                     (SELECT az.action_payload->>'idTag' FROM ocpp_events az
@@ -525,25 +536,11 @@ async def export_sessions(
             if (p_kwh or c_fee) else ""
         )
 
-        # SoC — mirror _resolve_soc() from sessions.py:
-        # 1. Scale normalisation: chargers that report 0-1 fraction instead of 0-100
-        soc_start_raw     = r["soc_start"]
-        soc_first_nonzero = r["soc_first_nonzero"]
-        soc_end_raw       = r["soc_end"]
-        ref = soc_end_raw if soc_end_raw is not None else soc_start_raw
-        scale = 100.0 if (ref is not None and float(ref) <= 1.0) else 1.0
-
-        soc_end_val = round(float(soc_end_raw) * scale, 1) if soc_end_raw is not None else None
-
-        # 2. Bogus-zero filter: skip leading 0% readings if first non-zero > 1.5%
-        soc_start_val: float | None = None
-        if soc_start_raw is not None:
-            soc_start_val = float(soc_start_raw) * scale
-            if soc_start_val == 0.0 and soc_first_nonzero is not None:
-                nonzero_val = float(soc_first_nonzero) * scale
-                if nonzero_val > 1.5:
-                    soc_start_val = nonzero_val
-            soc_start_val = round(soc_start_val, 1)
+        # SoC — shared correction (scale normalisation + leading/trailing
+        # bogus-zero filter). See _resolve_soc() in sessions.py.
+        soc_start_val, soc_end_val = _resolve_soc(
+            r["soc_start"], r["soc_first_nonzero"], r["soc_end"], r["soc_last_nonzero"]
+        )
 
         data_rows.append([
             status,             # A — Status (v3.2)

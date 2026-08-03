@@ -11,7 +11,7 @@ import {
   fetchAdminPricing,  createAdminPricing, updateAdminPricing,
   fetchAdminEvse,     fetchAdminUnidentifiedEvse,
   fetchUtilityAccounts, createUtilityAccount, updateUtilityAccount, deleteUtilityAccount,
-  fetchUtilityCredentials, upsertUtilityCredentials, triggerUtilityCollect,
+  fetchUtilityCredentials, upsertUtilityCredentials,
   fetchFleetUnitTypes, createFleetUnitType, updateFleetUnitType,
   fetchMaintenanceOverview, onboardFleetUnit, patchFleetUnit, moveFleetUnit, retireFleetUnit,
   fetchSites,
@@ -625,26 +625,11 @@ function UtilityAccountsSection() {
     onError: (e: Error) => setCredStatus({ ok: false, msg: e.message }),
   })
 
-  // ── Manual collect trigger ─────────────────────────────────────────────────
-  const [collectMsg, setCollectMsg] = useState('')
-  const triggerCollect = useMutation({
-    mutationFn: () => triggerUtilityCollect(2),
-    onSuccess: (r) => {
-      setCollectMsg(r.message)
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ['utility-accounts'] })
-        setCollectMsg('')
-      }, 4000)
-    },
-    onError: (e: Error) => setCollectMsg(`Error: ${e.message}`),
-  })
-
   const fields = UTILITY_FIELDS[acctForm.utility]
 
   const inputCls = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
   const btnPrimary = 'px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors'
   const btnDanger  = 'px-2 py-1 bg-red-50 text-red-600 text-xs rounded hover:bg-red-100 transition-colors'
-  const btnSecondary = 'px-3 py-1.5 border border-gray-300 text-gray-700 text-xs rounded-lg hover:bg-gray-50 transition-colors'
 
   // Group creds by utility for quick lookup
   const credMap = Object.fromEntries(creds.map(c => [c.utility, c]))
@@ -654,20 +639,15 @@ function UtilityAccountsSection() {
 
       {/* ── Account table ───────────────────────────────────────────────── */}
       <div>
-        <div className="flex items-center justify-between mb-3">
+        <div className="mb-3">
           <h3 className="text-sm font-semibold text-gray-700">Configured Accounts</h3>
-          <button
-            className={btnSecondary + ' flex items-center gap-1.5'}
-            disabled={triggerCollect.isPending}
-            onClick={() => triggerCollect.mutate()}
-          >
-            <RefreshCw size={13} className={triggerCollect.isPending ? 'animate-spin' : ''} />
-            {triggerCollect.isPending ? 'Collecting…' : 'Collect Now'}
-          </button>
+          {/* Collection runs nightly from the scrapers on the Mac mini, which
+              read this table directly — accounts added here are picked up on
+              the next run. There is no dashboard-triggered collection. */}
+          <p className="text-xs text-gray-400 mt-0.5">
+            Collected nightly. New accounts are picked up on the next run.
+          </p>
         </div>
-        {collectMsg && (
-          <p className="text-xs text-blue-600 mb-2">{collectMsg}</p>
-        )}
         {acctLoading ? (
           <div className="h-20 bg-gray-100 rounded-lg animate-pulse" />
         ) : accounts.length === 0 ? (

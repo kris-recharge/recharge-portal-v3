@@ -21,7 +21,7 @@ from ..auth import CurrentUser, filter_evse_ids
 from ..config import DEV_BYPASS_AUTH
 from ..constants import connector_type_for, display_name, get_all_station_ids, location_label
 from ..db import acquire
-from .sessions import _resolve_soc  # shared SoC scale + bogus-zero correction
+from .sessions import _auth_method, _resolve_soc  # shared SoC + auth classification
 from .utility import ADMIN_EMAIL, UTILITY_EFFICIENCY_SQL  # v3.2: shared metered-vs-dispensed query
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -51,31 +51,6 @@ def _pct(val) -> str:
     if val is None or val == "":
         return ""
     return f"{float(val):.0f}%"
-
-
-def _auth_method(start_tag: str) -> str:
-    """Derive Authentication Method from the StartTransaction idTag.
-
-    The tag that STARTED the transaction is the only reliable signal — Authorize
-    events near session start include rejected AutoCharge probes (Autel sends a
-    VID: Authorize on every plug-in) and so mislabel CC sessions. Validated at
-    100% (57/57) against Kris's hand-corrected Autel export (2026-07-13).
-
-    VID:*                      → AutoCharge (vehicle-initiated)
-    20-char A-Z/0-9 token      → App (LynkWell remote-start idTag)
-    anything else              → CC (each unit's payment terminal presents one
-                                 fixed tag, e.g. F20AA7178114D0 = Glennallen,
-                                 FE6DD7B2C3904F = ARG-Left; RFID cards land
-                                 here too)
-    blank (no StartTransaction) → unknown, left blank
-    """
-    if not start_tag:
-        return ""
-    if start_tag.startswith("VID:"):
-        return "AutoCharge"
-    if re.fullmatch(r"[0-9A-Z]{20}", start_tag):
-        return "App"
-    return "CC"
 
 
 # v3.3: Payter `ifd` (interface device) → export label. Values observed live:
@@ -213,7 +188,12 @@ async def export_sessions(
                     -- v3.3 Payter: committed CCR amount + card entry mode for
                     -- card-initiated sessions (matcher-populated link table).
                     pay.committed_amount                AS payter_amount_cents,
-                    pay.ifd                             AS payter_ifd
+                    pay.ifd                             AS payter_ifd,
+                    -- A matched Payter tap is proof the session was card-started,
+                    -- independent of what the idTag looks like. Kept separate from
+                    -- the amount: a committed tap can settle at NULL/0 (a session
+                    -- that drew no energy), and that must still classify as CC.
+                    (pay.payter_id IS NOT NULL)         AS payter_matched
                 FROM sessions s
                 LEFT JOIN LATERAL (
                     SELECT price_per_kwh, connection_fee
@@ -224,7 +204,7 @@ async def export_sessions(
                     ORDER BY effective_start DESC LIMIT 1
                 ) ep ON true
                 LEFT JOIN LATERAL (
-                    SELECT pt.committed_amount, pt.ifd
+                    SELECT pt.committed_amount, pt.ifd, pm.payter_id
                     FROM payter_session_matches pm
                     JOIN payter_transactions pt ON pt.payter_id = pm.payter_id
                     WHERE pm.station_id = s.station_id
@@ -252,7 +232,8 @@ async def export_sessions(
                     price_per_kwh::numeric              AS price_per_kwh,
                     connection_fee::numeric            AS connection_fee,
                     payter_amount_cents::numeric        AS payter_amount_cents,
-                    payter_ifd
+                    payter_ifd,
+                    payter_matched
                 FROM with_auth
                 WHERE start_utc <= $3   -- v3.2: keep only sessions that START in range
             ),
@@ -407,7 +388,8 @@ async def export_sessions(
                     NULL::numeric                       AS price_per_kwh,
                     NULL::numeric                       AS connection_fee,
                     NULL::numeric                       AS payter_amount_cents,
-                    NULL::text                          AS payter_ifd
+                    NULL::text                          AS payter_ifd,
+                    FALSE                               AS payter_matched
                 FROM attempts_filtered f
             ),
             unioned AS (
@@ -556,7 +538,8 @@ async def export_sessions(
             _pct(soc_start_val),
             _pct(soc_end_val),
             r["auth_tag"] or "",                                    # M — Authentication (raw tag)
-            "" if is_failed else _auth_method(r["auth_tag"] or ""), # N — Authentication Method
+            "" if is_failed else _auth_method(r["auth_tag"] or "",
+                                              bool(r["payter_matched"])),  # N — Authentication Method
             est_rev,                                    # O — Est. Revenue
             r["vid_tag"] or "",                         # P — VID (VID:-prefixed only)
             (round(float(r["payter_amount_cents"]) / 100.0, 2)

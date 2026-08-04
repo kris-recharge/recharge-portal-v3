@@ -16,8 +16,15 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts'
-import { X, Zap, Clock, Battery, TrendingUp } from 'lucide-react'
+import { X, Zap, Clock, Battery, TrendingUp, KeyRound } from 'lucide-react'
 import { ChargingSession, fetchSessionDetail, MeterValuePoint } from '../lib/api'
+
+/** Operator-facing wording for the API's auth_method values. */
+const AUTH_METHOD_LABEL: Record<'CC' | 'App' | 'AutoCharge', string> = {
+  CC: 'Credit card',
+  App: 'Mobile app',
+  AutoCharge: 'AutoCharge',
+}
 
 interface Props {
   session: ChargingSession
@@ -170,6 +177,9 @@ export function SessionDetailModal({ session: s, onClose }: Props) {
           ) : null}
           {s.payter_ifd != null && (
             <Stat icon={<span className="text-xs font-bold">💳</span>} label="Card Entry" value={s.payter_ifd.charAt(0) + s.payter_ifd.slice(1).toLowerCase()} />
+          )}
+          {s.auth_method != null && (
+            <Stat icon={<KeyRound size={14} />} label="Authentication" value={AUTH_METHOD_LABEL[s.auth_method]} />
           )}
         </div>
 

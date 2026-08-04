@@ -32,6 +32,10 @@ class ChargingSession(BaseModel):
     # mode (CONTACTLESS / CONTACT / magstripe).
     actual_revenue_usd: float | None = None
     payter_ifd: str | None = None
+    # v3.3: how the driver authenticated — "CC" | "App" | "AutoCharge", or None
+    # when no StartTransaction was found (and always None for failed starts,
+    # which never authenticated at all). Derived by sessions._auth_method.
+    auth_method: str | None = None
 
 
 class SessionsResponse(BaseModel):

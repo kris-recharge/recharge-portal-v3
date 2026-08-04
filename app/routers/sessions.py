@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,44 @@ def _fmt_ak(dt: datetime | None) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(_AK).strftime("%Y-%m-%d %H:%M")
+
+
+def _auth_method(start_tag: str, payter_matched: bool = False) -> str:
+    """Derive Authentication Method for a session. Shared with the export.
+
+    The tag that STARTED the transaction is the only reliable idTag signal —
+    Authorize events near session start include rejected AutoCharge probes
+    (Autel sends a VID: Authorize on every plug-in) and so mislabel CC sessions.
+    Validated 100% (57/57) against Kris's hand-corrected Autel export
+    (2026-07-13).
+
+    A matched Payter tap outranks the tag entirely (v3.3, 2026-08-04). The CCRs
+    on the Alpitronic units don't present a fixed terminal tag the way every
+    older reader does — CL-C's first card session started with
+    VPCUUT5TWFOLGNY863HC, 20 chars of A-Z/0-9, indistinguishable by shape from a
+    LynkWell app token. Whether that tag is fixed per terminal or minted per tap
+    is still unknown (n=1 at the time of writing), so classification must not
+    depend on the answer: if the matcher linked a committed tap to this session,
+    a card was charged and it's CC.
+
+    payter match                → CC (authoritative — a card was actually charged)
+    VID:*                       → AutoCharge (vehicle-initiated)
+    20-char A-Z/0-9 token       → App (LynkWell remote-start idTag)
+    anything else               → CC (older payment terminals present one fixed
+                                  tag, e.g. F20AA7178114D0 = Glennallen,
+                                  FE6DD7B2C3904F = ARG-Left; RFID cards land
+                                  here too)
+    blank (no StartTransaction) → unknown, left blank
+    """
+    if payter_matched:
+        return "CC"
+    if not start_tag:
+        return ""
+    if start_tag.startswith("VID:"):
+        return "AutoCharge"
+    if re.fullmatch(r"[0-9A-Z]{20}", start_tag):
+        return "App"
+    return "CC"
 
 
 def _resolve_soc(
@@ -195,6 +234,23 @@ async def get_sessions(
                                              AND s.start_utc + INTERVAL '5 minutes'
                      ORDER BY ABS(EXTRACT(EPOCH FROM (o.received_at - s.start_utc))) ASC
                      LIMIT 1) AS id_tag,
+                    -- v3.3: the idTag that actually STARTED the transaction, for the
+                    -- Authentication column. Mirrors export.py's with_auth exactly —
+                    -- charger-stamped payload timestamp for the nearest-match (an
+                    -- offline unit replays StartTransaction minutes late), with the
+                    -- coarse received_at bound left in to keep the index usable.
+                    (SELECT o.action_payload->>'idTag' FROM ocpp_events o
+                     WHERE o.asset_id = s.station_id
+                       AND o.action   = 'StartTransaction'
+                       AND (o.action_payload->>'connectorId')::int = s.connector_id
+                       AND o.received_at BETWEEN s.start_utc - INTERVAL '6 hours'
+                                             AND s.start_utc + INTERVAL '24 hours'
+                       AND (o.action_payload->>'timestamp')::timestamptz
+                             BETWEEN s.start_utc - INTERVAL '6 hours'
+                                 AND s.start_utc + INTERVAL '5 minutes'
+                     ORDER BY ABS(EXTRACT(EPOCH FROM (
+                         (o.action_payload->>'timestamp')::timestamptz - s.start_utc))) ASC
+                     LIMIT 1) AS auth_tag,
                     (SELECT ep.price_per_kwh FROM evse_pricing ep
                      WHERE ep.station_id = s.station_id
                        AND ep.effective_start <= s.start_utc
@@ -208,10 +264,13 @@ async def get_sessions(
                     -- v3.3 Payter: committed CCR amount + card entry mode for
                     -- card-initiated sessions (matcher-populated link table).
                     pay.committed_amount                       AS payter_amount_cents,
-                    pay.ifd                                    AS payter_ifd
+                    pay.ifd                                    AS payter_ifd,
+                    -- Proof of a card start, independent of idTag shape (see
+                    -- export._auth_method for why the shape rules aren't enough).
+                    (pay.payter_id IS NOT NULL)                AS payter_matched
                 FROM sessions s
                 LEFT JOIN LATERAL (
-                    SELECT pt.committed_amount, pt.ifd
+                    SELECT pt.committed_amount, pt.ifd, pm.payter_id
                     FROM payter_session_matches pm
                     JOIN payter_transactions pt ON pt.payter_id = pm.payter_id
                     WHERE pm.station_id = s.station_id
@@ -235,10 +294,12 @@ async def get_sessions(
                     soc_end::numeric                    AS soc_end,
                     soc_last_nonzero::numeric           AS soc_last_nonzero,
                     id_tag,
+                    auth_tag,
                     price_per_kwh::numeric              AS price_per_kwh,
                     connection_fee::numeric             AS connection_fee,
                     payter_amount_cents::numeric        AS payter_amount_cents,
-                    payter_ifd
+                    payter_ifd,
+                    payter_matched
                 FROM with_auth
                 WHERE ($3::timestamptz IS NULL OR start_utc <= $3)  -- v3.2: START in range
             ),
@@ -404,10 +465,12 @@ async def get_sessions(
                        AND az.received_at BETWEEN f.attempt_at - INTERVAL '30 seconds'
                                               AND f.episode_end
                      ORDER BY az.received_at ASC LIMIT 1) AS id_tag,
+                    NULL::text                          AS auth_tag,
                     NULL::numeric                       AS price_per_kwh,
                     NULL::numeric                       AS connection_fee,
                     NULL::numeric                       AS payter_amount_cents,
-                    NULL::text                          AS payter_ifd
+                    NULL::text                          AS payter_ifd,
+                    FALSE                               AS payter_matched
                 FROM attempts_filtered f
             ),
             unioned AS (
@@ -477,6 +540,13 @@ async def get_sessions(
 
         status = "completed" if r["kind"] == "session" else "failed_start"
 
+        # Failed starts never authenticated, so they get no method (matches the
+        # export, which blanks column N for them).
+        auth_method = (
+            None if status == "failed_start"
+            else (_auth_method(r["auth_tag"] or "", bool(r["payter_matched"])) or None)
+        )
+
         sessions.append(
             ChargingSession(
                 status          = status,
@@ -497,6 +567,7 @@ async def get_sessions(
                 est_revenue_usd = est_rev,
                 actual_revenue_usd = actual_rev,
                 payter_ifd      = r["payter_ifd"],
+                auth_method     = auth_method,
             )
         )
 

@@ -295,7 +295,15 @@ async def match_sessions(pool: asyncpg.Pool) -> int:
             """
             SELECT p.payter_id, p.txn_timestamp, c.external_id AS station_id
             FROM payter_transactions p
-            JOIN chargers c ON c.payter_serial = p.serial_number
+            -- Match on the serial's base, not the whole string. The CCRs on the
+            -- Alpitronic units are labelled with a trailing "-NN" that the Data
+            -- API never reports (chargers holds POL20245100346-16, Payter sends
+            -- POL20245100346), so an exact join silently matched nothing for all
+            -- four CL units — no revenue, no card entry, no CC classification.
+            -- Normalising here (rather than rewriting chargers) keeps the printed
+            -- serial intact and tolerates either form at onboarding.
+            JOIN chargers c
+              ON split_part(c.payter_serial, '-', 1) = split_part(p.serial_number, '-', 1)
             WHERE p.disposition = 'APPROVED'
               AND p.state = 'COMMITTED'
               AND NOT EXISTS (SELECT 1 FROM payter_session_matches m

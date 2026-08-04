@@ -20,6 +20,28 @@ const PAGE_SIZE = 100
 const LIVE_HOURS = 168          // rolling window length
 const LIVE_REFRESH_MS = 60_000  // auto-refresh interval (60 s)
 
+// ── Authentication method presentation ────────────────────────────────────────
+// v3.3: how the driver started the session, from the API's auth_method.
+type AuthMethod = 'CC' | 'App' | 'AutoCharge'
+
+const AUTH_METHOD_LABEL: Record<AuthMethod, string> = {
+  CC:         'Card',
+  App:        'App',
+  AutoCharge: 'AutoCharge',
+}
+
+const AUTH_METHOD_STYLE: Record<AuthMethod, string> = {
+  CC:         'bg-emerald-100 text-emerald-700',
+  App:        'bg-blue-100 text-blue-700',
+  AutoCharge: 'bg-violet-100 text-violet-700',
+}
+
+const AUTH_METHOD_TITLE: Record<AuthMethod, string> = {
+  CC:         'Credit card at the unit’s payment terminal (or an RFID card)',
+  App:        'Remote start from the LynkWell mobile app',
+  AutoCharge: 'Vehicle-initiated — the car’s ID was recognised on plug-in',
+}
+
 // ── AK-timezone date helpers ───────────────────────────────────────────────────
 const AK_TZ = 'America/Anchorage'
 
@@ -499,6 +521,7 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
                 <th>SoC Start</th>
                 <th>SoC End</th>
                 <th>VID</th>
+                <th>Auth</th>
                 <th>Revenue</th>
               </tr>
             </thead>
@@ -507,7 +530,7 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
                 <SkeletonTable rows={10} cols={12} />
               ) : isError ? (
                 <tr>
-                  <td colSpan={12} className="text-center py-12">
+                  <td colSpan={13} className="text-center py-12">
                     <span className="text-red-500 font-medium">⚠ Failed to load sessions</span>
                     <span className="block text-gray-400 text-xs mt-1">
                       Check that the API server is running, then refresh.
@@ -516,7 +539,7 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
                 </tr>
               ) : sessions.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="text-center text-gray-400 py-12">
+                  <td colSpan={13} className="text-center text-gray-400 py-12">
                     No sessions found for this filter
                   </td>
                 </tr>
@@ -619,6 +642,18 @@ function SessionRow({
       <td className="tabular-nums">{s.soc_end   != null ? `${s.soc_end}%`   : '—'}</td>
       <td className="font-mono text-xs text-gray-500">
         {s.id_tag?.startsWith('VID:') ? s.id_tag : ''}
+      </td>
+      <td>
+        {s.auth_method ? (
+          <span
+            className={`px-1.5 py-0.5 rounded text-xs whitespace-nowrap ${AUTH_METHOD_STYLE[s.auth_method]}`}
+            title={AUTH_METHOD_TITLE[s.auth_method]}
+          >
+            {AUTH_METHOD_LABEL[s.auth_method]}
+          </span>
+        ) : (
+          <span className="text-gray-400">—</span>
+        )}
       </td>
       <td className="tabular-nums text-emerald-700 font-medium">
         {/* v3.3: Payter-committed amount when the session was card-initiated

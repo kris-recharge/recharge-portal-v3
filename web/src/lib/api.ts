@@ -73,6 +73,9 @@ export interface ChargingSession {
   // and card entry mode (CONTACTLESS / CONTACT / magstripe).
   actual_revenue_usd: number | null
   payter_ifd: string | null
+  // v3.3: how the driver authenticated. Null for failed starts (they never
+  // authenticated) and for sessions with no StartTransaction on record.
+  auth_method: 'CC' | 'App' | 'AutoCharge' | null
 }
 
 export interface SessionsResponse {

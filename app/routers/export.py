@@ -487,11 +487,17 @@ async def export_sessions(
         "SoC Start (%)",          # K
         "SoC End (%)",            # L
         "Authentication",         # M
+        # N — v3.3: card entry mode for terminal-matched sessions, otherwise the
+        # idTag-derived method. No longer "Method" alone, hence the rename.
         "Authentication Method",  # N
-        "Est. Revenue (USD)",     # O
+        # O — v3.3: actual committed amount where a card terminal recorded one,
+        # price-sheet estimate everywhere else. Was "Est. Revenue (USD)"; the
+        # old name is wrong now that real money lands in the same column.
+        "Revenue (USD)",          # O
         "VID",                    # P
-        "Actual Revenue (USD)",   # Q — v3.3: Payter CCR committed amount
-        "Card Entry",             # R — v3.3: Contactless / Contact / Magstripe
+        # Q "Actual Revenue (USD)" and R "Card Entry" were dropped in v3.3 once
+        # N and O started carrying the terminal's own values — they were exact
+        # duplicates on every matched row. Sheet is 16 columns, A–P.
     ]
 
     data_rows: list[list] = []
@@ -524,6 +530,39 @@ async def export_sessions(
             r["soc_start"], r["soc_first_nonzero"], r["soc_end"], r["soc_last_nonzero"]
         )
 
+        # ── v3.3: card-terminal record supersedes our derived values ──────────
+        # Where a session is matched to a committed terminal transaction, the
+        # terminal knows better than we do on both counts, so it wins columns N
+        # and O: the entry mode is what the driver actually presented, and the
+        # committed amount is what was actually charged. Unmatched sessions keep
+        # the OCPP-derived classification and the price-sheet estimate.
+        #
+        # Side effect worth knowing when reading the sheet: column N doubles as
+        # the marker for which rows carry real money. An entry-mode value there
+        # (Contactless / Contact (chip) / Magstripe) means column O is actual;
+        # CC / App / AutoCharge means column O is an estimate.
+        #
+        # Payter is the only terminal feed wired up today. Nayax (the Autel
+        # readers at Delta/Glennallen) lands in these same two fields when Kris
+        # gets Data API access, so nothing here is Payter-specific by design.
+        matched     = bool(r["payter_matched"])
+        card_entry  = _card_entry(r["payter_ifd"])
+        pay_cents   = r["payter_amount_cents"]
+        actual_rev  = (
+            round(float(pay_cents) / 100.0, 2) if pay_cents is not None else ""
+        )
+
+        auth_method = (
+            "" if is_failed
+            else _auth_method(r["auth_tag"] or "", matched)
+        )
+        # Fall back to the plain "CC" when a match exists but carries no ifd —
+        # better a coarse label than a blank cell.
+        if matched and card_entry:
+            auth_method = card_entry
+
+        revenue = actual_rev if (matched and actual_rev != "") else est_rev
+
         data_rows.append([
             status,             # A — Status (v3.2)
             _ak_dt(start_dt),   # B — native datetime cell (v3.2)
@@ -537,14 +576,10 @@ async def export_sessions(
             dur_min,
             _pct(soc_start_val),
             _pct(soc_end_val),
-            r["auth_tag"] or "",                                    # M — Authentication (raw tag)
-            "" if is_failed else _auth_method(r["auth_tag"] or "",
-                                              bool(r["payter_matched"])),  # N — Authentication Method
-            est_rev,                                    # O — Est. Revenue
-            r["vid_tag"] or "",                         # P — VID (VID:-prefixed only)
-            (round(float(r["payter_amount_cents"]) / 100.0, 2)
-             if r["payter_amount_cents"] is not None else ""),  # Q — Actual Revenue (Payter)
-            _card_entry(r["payter_ifd"]),               # R — Card Entry
+            r["auth_tag"] or "",    # M — Authentication (raw tag)
+            auth_method,            # N — entry mode when card-matched, else derived
+            revenue,                # O — committed amount when card-matched, else est.
+            r["vid_tag"] or "",     # P — VID (VID:-prefixed only)
         ])
 
     # ── Build faults rows ─────────────────────────────────────────────────────

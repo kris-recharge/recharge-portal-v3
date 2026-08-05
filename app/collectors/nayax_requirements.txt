@@ -1,0 +1,9 @@
+# Nayax portal collector (rca_nayax_v3 container) — deliberately separate from
+# app/requirements.txt. The API image is python:3.12-slim with no browser; this
+# one carries Playwright/Chromium, which would add ~400 MB to an image that
+# doesn't need it.
+asyncpg==0.30.0
+httpx==0.28.1
+python-dotenv==1.0.1
+pyotp==2.9.0
+playwright==1.49.0

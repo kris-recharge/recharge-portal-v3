@@ -34,6 +34,24 @@ services:
     networks:
       - rca_net_v3
 
+  # Nayax CCR collector for the 3 Autels. Reads the Nayax Core portal's
+  # JSON-RPC facade (the Lynx API is still 403). Own container because it
+  # needs Chromium for login; the 15-minute poll itself is plain HTTP.
+  rca_nayax_v3:
+    build:
+      context: .
+      dockerfile: Dockerfile.nayax
+    container_name: rca_nayax_v3
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - nayax_state:/data     # session cookies survive rebuilds
+    networks:
+      - rca_net_v3
+
 networks:
   rca_net_v3:
     driver: bridge
+
+volumes:
+  nayax_state:

@@ -1,0 +1,27 @@
+# Nayax Core portal collector.
+#
+# Separate from Dockerfile.app on purpose: the API image is python:3.12-slim
+# with no browser, and the API container runs a single worker because of its
+# in-process schedulers. Chromium belongs nowhere near it.
+#
+# The Playwright base image ships the browser plus its system libraries already
+# matched to the client version, which avoids the usual "host libs don't match
+# the driver" breakage on Ubuntu.
+FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
+
+WORKDIR /app
+
+COPY app/collectors/nayax_requirements.txt .
+RUN pip install --no-cache-dir -r nayax_requirements.txt
+
+# Only what the collector actually imports. app/collectors/__init__.py pulls in
+# sibling modules, so the package comes along, but no router or FastAPI code.
+COPY app/ ./app/
+COPY run_nayax_portal.py .
+
+# Session cookies live on a mounted volume so a container rebuild doesn't force
+# a fresh login (and a fresh trusted-device entry) every deploy.
+ENV NAYAX_STATE_PATH=/data/nayax_state.json
+VOLUME ["/data"]
+
+CMD ["python", "run_nayax_portal.py", "--daemon"]

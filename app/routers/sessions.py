@@ -32,7 +32,7 @@ def _fmt_ak(dt: datetime | None) -> str:
     return dt.astimezone(_AK).strftime("%Y-%m-%d %H:%M")
 
 
-def _auth_method(start_tag: str, payter_matched: bool = False) -> str:
+def _auth_method(start_tag: str, card_matched: bool = False) -> str:
     """Derive Authentication Method for a session. Shared with the export.
 
     The tag that STARTED the transaction is the only reliable idTag signal —
@@ -41,16 +41,17 @@ def _auth_method(start_tag: str, payter_matched: bool = False) -> str:
     Validated 100% (57/57) against Kris's hand-corrected Autel export
     (2026-07-13).
 
-    A matched Payter tap outranks the tag entirely (v3.3, 2026-08-04). The CCRs
-    on the Alpitronic units don't present a fixed terminal tag the way every
-    older reader does — CL-C's first card session started with
+    A matched card-terminal tap outranks the tag entirely (v3.3, 2026-08-04).
+    The CCRs on the Alpitronic units don't present a fixed terminal tag the way
+    every older reader does — CL-C's first card session started with
     VPCUUT5TWFOLGNY863HC, 20 chars of A-Z/0-9, indistinguishable by shape from a
     LynkWell app token. Whether that tag is fixed per terminal or minted per tap
     is still unknown (n=1 at the time of writing), so classification must not
     depend on the answer: if the matcher linked a committed tap to this session,
     a card was charged and it's CC.
 
-    payter match                → CC (authoritative — a card was actually charged)
+    card_transactions match     → CC (authoritative — a card was actually charged,
+                                  Payter or Nayax alike)
     VID:*                       → AutoCharge (vehicle-initiated)
     20-char A-Z/0-9 token       → App (LynkWell remote-start idTag)
     anything else               → CC (older payment terminals present one fixed
@@ -59,7 +60,7 @@ def _auth_method(start_tag: str, payter_matched: bool = False) -> str:
                                   here too)
     blank (no StartTransaction) → unknown, left blank
     """
-    if payter_matched:
+    if card_matched:
         return "CC"
     if not start_tag:
         return ""
@@ -261,23 +262,28 @@ async def get_sessions(
                        AND ep.effective_start <= s.start_utc
                        AND (ep.effective_end IS NULL OR ep.effective_end > s.start_utc)
                      ORDER BY ep.effective_start DESC LIMIT 1) AS connection_fee,
-                    -- v3.3 Payter: committed CCR amount + card entry mode for
-                    -- card-initiated sessions (matcher-populated link table).
-                    pay.committed_amount                       AS payter_amount_cents,
-                    pay.ifd                                    AS payter_ifd,
+                    -- v3.3: committed CCR amount + normalised card entry mode
+                    -- for card-initiated sessions. Reads the cross-vendor
+                    -- card_transactions view, so Payter (ARG, Cooper Landing)
+                    -- and Nayax (Delta, Glennallen) arrive in one shape and the
+                    -- dashboard never learns which terminal brand a charger has.
+                    card.committed_cents                       AS card_amount_cents,
+                    card.entry_mode                            AS card_entry_mode,
                     -- Proof of a card start, independent of idTag shape (see
-                    -- export._auth_method for why the shape rules aren't enough).
-                    (pay.payter_id IS NOT NULL)                AS payter_matched
+                    -- _auth_method for why the shape rules aren't enough). Kept
+                    -- separate from the amount: a committed tap can settle at
+                    -- NULL/0 (a session that drew no energy) and must still
+                    -- classify as CC.
+                    (card.vendor IS NOT NULL)                  AS card_matched
                 FROM sessions s
                 LEFT JOIN LATERAL (
-                    SELECT pt.committed_amount, pt.ifd, pm.payter_id
-                    FROM payter_session_matches pm
-                    JOIN payter_transactions pt ON pt.payter_id = pm.payter_id
-                    WHERE pm.station_id = s.station_id
-                      AND pm.connector_id IS NOT DISTINCT FROM s.connector_id
-                      AND pm.transaction_id = s.transaction_id::text
+                    SELECT ct.vendor, ct.committed_cents, ct.entry_mode
+                    FROM card_transactions ct
+                    WHERE ct.station_id = s.station_id
+                      AND ct.connector_id IS NOT DISTINCT FROM s.connector_id
+                      AND ct.transaction_id = s.transaction_id::text
                     LIMIT 1
-                ) pay ON true
+                ) card ON true
             ),
             real_rows AS (
                 SELECT
@@ -297,9 +303,9 @@ async def get_sessions(
                     auth_tag,
                     price_per_kwh::numeric              AS price_per_kwh,
                     connection_fee::numeric             AS connection_fee,
-                    payter_amount_cents::numeric        AS payter_amount_cents,
-                    payter_ifd,
-                    payter_matched
+                    card_amount_cents::numeric          AS card_amount_cents,
+                    card_entry_mode,
+                    card_matched
                 FROM with_auth
                 WHERE ($3::timestamptz IS NULL OR start_utc <= $3)  -- v3.2: START in range
             ),
@@ -468,9 +474,9 @@ async def get_sessions(
                     NULL::text                          AS auth_tag,
                     NULL::numeric                       AS price_per_kwh,
                     NULL::numeric                       AS connection_fee,
-                    NULL::numeric                       AS payter_amount_cents,
-                    NULL::text                          AS payter_ifd,
-                    FALSE                               AS payter_matched
+                    NULL::numeric                       AS card_amount_cents,
+                    NULL::text                          AS card_entry_mode,
+                    FALSE                               AS card_matched
                 FROM attempts_filtered f
             ),
             unioned AS (
@@ -482,12 +488,12 @@ async def get_sessions(
                    COUNT(*) OVER()                                              AS total_count,
                    COUNT(*) FILTER (WHERE kind = 'session') OVER()              AS completed_count,
                    SUM(energy_wh_delta) FILTER (WHERE kind = 'session') OVER()  AS agg_energy_wh,
-                   -- v3.3: prefer the Payter-committed amount per session,
+                   -- v3.3: prefer the terminal-committed amount per session,
                    -- falling back to the price-sheet estimate.
                    SUM(
                        CASE WHEN kind = 'session'
                             THEN COALESCE(
-                                payter_amount_cents / 100.0,
+                                card_amount_cents / 100.0,
                                 CASE WHEN price_per_kwh IS NOT NULL OR connection_fee IS NOT NULL
                                      THEN COALESCE(connection_fee, 0)
                                           + (energy_wh_delta / 1000.0) * COALESCE(price_per_kwh, 0)
@@ -531,8 +537,8 @@ async def get_sessions(
         c_fee   = float(r["connection_fee"] or 0)
         est_rev = math.floor((c_fee + (energy_kwh or 0) * p_kwh) * 100) / 100 if (p_kwh or c_fee) else None
 
-        pay_cents  = r["payter_amount_cents"]
-        actual_rev = round(float(pay_cents) / 100.0, 2) if pay_cents is not None else None
+        card_cents = r["card_amount_cents"]
+        actual_rev = round(float(card_cents) / 100.0, 2) if card_cents is not None else None
 
         soc_start_pct, soc_end_pct = _resolve_soc(
             r["soc_start"], r["soc_first_nonzero"], r["soc_end"], r["soc_last_nonzero"]
@@ -544,7 +550,7 @@ async def get_sessions(
         # export, which blanks column N for them).
         auth_method = (
             None if status == "failed_start"
-            else (_auth_method(r["auth_tag"] or "", bool(r["payter_matched"])) or None)
+            else (_auth_method(r["auth_tag"] or "", bool(r["card_matched"])) or None)
         )
 
         sessions.append(
@@ -566,7 +572,7 @@ async def get_sessions(
                 id_tag          = r["id_tag"],
                 est_revenue_usd = est_rev,
                 actual_revenue_usd = actual_rev,
-                payter_ifd      = r["payter_ifd"],
+                card_entry_mode = r["card_entry_mode"],
                 auth_method     = auth_method,
             )
         )

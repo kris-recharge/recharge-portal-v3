@@ -27,11 +27,12 @@ class ChargingSession(BaseModel):
     soc_end: int | None
     id_tag: str | None
     est_revenue_usd: float | None
-    # v3.3 Payter: the CCR's committed amount for this session (None when the
-    # session wasn't card-initiated or no match exists) and the card entry
-    # mode (CONTACTLESS / CONTACT / magstripe).
+    # v3.3: the card terminal's committed amount for this session (None when the
+    # session wasn't card-initiated or no match exists) and the entry mode the
+    # driver used — "Contactless" | "Contact" | "Magstripe", already normalised
+    # across vendors by the card_transactions view, so this is display-ready.
     actual_revenue_usd: float | None = None
-    payter_ifd: str | None = None
+    card_entry_mode: str | None = None
     # v3.3: how the driver authenticated — "CC" | "App" | "AutoCharge", or None
     # when no StartTransaction was found (and always None for failed starts,
     # which never authenticated at all). Derived by sessions._auth_method.

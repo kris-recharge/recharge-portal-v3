@@ -53,18 +53,6 @@ def _pct(val) -> str:
     return f"{float(val):.0f}%"
 
 
-# v3.3: Payter `ifd` (interface device) → export label. Values observed live:
-# CONTACTLESS, CONTACT. Magstripe hasn't appeared in Data API rows yet, so
-# unknown values pass through title-cased until the real enum shows up.
-_IFD_LABELS = {"CONTACTLESS": "Contactless", "CONTACT": "Contact (chip)"}
-
-
-def _card_entry(ifd: str | None) -> str:
-    if not ifd:
-        return ""
-    return _IFD_LABELS.get(ifd, ifd.title())
-
-
 @router.get("")
 async def export_sessions(
     user: CurrentUser,
@@ -185,15 +173,16 @@ async def export_sessions(
                      LIMIT 1) AS vid_tag,
                     ep.price_per_kwh,
                     ep.connection_fee,
-                    -- v3.3 Payter: committed CCR amount + card entry mode for
-                    -- card-initiated sessions (matcher-populated link table).
-                    pay.committed_amount                AS payter_amount_cents,
-                    pay.ifd                             AS payter_ifd,
-                    -- A matched Payter tap is proof the session was card-started,
+                    -- v3.3: committed CCR amount + normalised card entry mode for
+                    -- card-initiated sessions, from the cross-vendor
+                    -- card_transactions view (Payter and Nayax in one shape).
+                    card.committed_cents                AS card_amount_cents,
+                    card.entry_mode                     AS card_entry_mode,
+                    -- A matched tap is proof the session was card-started,
                     -- independent of what the idTag looks like. Kept separate from
                     -- the amount: a committed tap can settle at NULL/0 (a session
                     -- that drew no energy), and that must still classify as CC.
-                    (pay.payter_id IS NOT NULL)         AS payter_matched
+                    (card.vendor IS NOT NULL)           AS card_matched
                 FROM sessions s
                 LEFT JOIN LATERAL (
                     SELECT price_per_kwh, connection_fee
@@ -204,14 +193,13 @@ async def export_sessions(
                     ORDER BY effective_start DESC LIMIT 1
                 ) ep ON true
                 LEFT JOIN LATERAL (
-                    SELECT pt.committed_amount, pt.ifd, pm.payter_id
-                    FROM payter_session_matches pm
-                    JOIN payter_transactions pt ON pt.payter_id = pm.payter_id
-                    WHERE pm.station_id = s.station_id
-                      AND pm.connector_id IS NOT DISTINCT FROM s.connector_id
-                      AND pm.transaction_id = s.transaction_id::text
+                    SELECT ct.vendor, ct.committed_cents, ct.entry_mode
+                    FROM card_transactions ct
+                    WHERE ct.station_id = s.station_id
+                      AND ct.connector_id IS NOT DISTINCT FROM s.connector_id
+                      AND ct.transaction_id = s.transaction_id::text
                     LIMIT 1
-                ) pay ON true
+                ) card ON true
             ),
             real_rows AS (
                 SELECT
@@ -231,9 +219,9 @@ async def export_sessions(
                     vid_tag,
                     price_per_kwh::numeric              AS price_per_kwh,
                     connection_fee::numeric            AS connection_fee,
-                    payter_amount_cents::numeric        AS payter_amount_cents,
-                    payter_ifd,
-                    payter_matched
+                    card_amount_cents::numeric          AS card_amount_cents,
+                    card_entry_mode,
+                    card_matched
                 FROM with_auth
                 WHERE start_utc <= $3   -- v3.2: keep only sessions that START in range
             ),
@@ -387,9 +375,9 @@ async def export_sessions(
                      ORDER BY az.received_at ASC LIMIT 1) AS vid_tag,
                     NULL::numeric                       AS price_per_kwh,
                     NULL::numeric                       AS connection_fee,
-                    NULL::numeric                       AS payter_amount_cents,
-                    NULL::text                          AS payter_ifd,
-                    FALSE                               AS payter_matched
+                    NULL::numeric                       AS card_amount_cents,
+                    NULL::text                          AS card_entry_mode,
+                    FALSE                               AS card_matched
                 FROM attempts_filtered f
             ),
             unioned AS (
@@ -539,17 +527,19 @@ async def export_sessions(
         #
         # Side effect worth knowing when reading the sheet: column N doubles as
         # the marker for which rows carry real money. An entry-mode value there
-        # (Contactless / Contact (chip) / Magstripe) means column O is actual;
+        # (Contactless / Contact / Magstripe) means column O is actual;
         # CC / App / AutoCharge means column O is an estimate.
         #
-        # Payter is the only terminal feed wired up today. Nayax (the Autel
-        # readers at Delta/Glennallen) lands in these same two fields when Kris
-        # gets Data API access, so nothing here is Payter-specific by design.
-        matched     = bool(r["payter_matched"])
-        card_entry  = _card_entry(r["payter_ifd"])
-        pay_cents   = r["payter_amount_cents"]
+        # Both terminal feeds are wired up: Payter (ARG, Cooper Landing) and
+        # Nayax (the Autel readers at Delta and Glennallen). They arrive already
+        # merged and label-normalised by the card_transactions view, so nothing
+        # here is vendor-specific — the ABB readers at Alyeska Tire will need no
+        # change to this code, only a third branch inside the view.
+        matched     = bool(r["card_matched"])
+        card_entry  = r["card_entry_mode"] or ""
+        card_cents  = r["card_amount_cents"]
         actual_rev  = (
-            round(float(pay_cents) / 100.0, 2) if pay_cents is not None else ""
+            round(float(card_cents) / 100.0, 2) if card_cents is not None else ""
         )
 
         auth_method = (

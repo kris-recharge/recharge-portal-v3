@@ -175,8 +175,11 @@ export function SessionDetailModal({ session: s, onClose }: Props) {
           ) : s.est_revenue_usd != null ? (
             <Stat icon={<span className="text-xs font-bold">$</span>} label="Est. Revenue" value={`$${(Math.floor(s.est_revenue_usd * 100) / 100).toFixed(2)}`} />
           ) : null}
-          {s.payter_ifd != null && (
-            <Stat icon={<span className="text-xs font-bold">💳</span>} label="Card Entry" value={s.payter_ifd.charAt(0) + s.payter_ifd.slice(1).toLowerCase()} />
+          {/* Entry mode is normalised server-side by the card_transactions
+              view, so it renders verbatim — no casing fix-up here, and a
+              vendor-specific spelling can never leak through. */}
+          {s.card_entry_mode != null && (
+            <Stat icon={<span className="text-xs font-bold">💳</span>} label="Card Entry" value={s.card_entry_mode} />
           )}
           {s.auth_method != null && (
             <Stat icon={<KeyRound size={14} />} label="Authentication" value={AUTH_METHOD_LABEL[s.auth_method]} />

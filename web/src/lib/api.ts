@@ -69,10 +69,12 @@ export interface ChargingSession {
   soc_end: number | null
   id_tag: string | null
   est_revenue_usd: number | null
-  // v3.3 Payter: committed CCR amount (replaces the estimate when present)
-  // and card entry mode (CONTACTLESS / CONTACT / magstripe).
+  // v3.3: committed CCR amount (replaces the estimate when present) and the
+  // card entry mode. Both come from the cross-vendor card_transactions view —
+  // Payter and Nayax terminals alike — and the entry mode arrives already
+  // normalised to "Contactless" | "Contact" | "Magstripe", ready to render.
   actual_revenue_usd: number | null
-  payter_ifd: string | null
+  card_entry_mode: string | null
   // v3.3: how the driver authenticated. Null for failed starts (they never
   // authenticated) and for sessions with no StartTransaction on record.
   auth_method: 'CC' | 'App' | 'AutoCharge' | null

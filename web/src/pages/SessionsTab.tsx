@@ -656,10 +656,10 @@ function SessionRow({
         )}
       </td>
       <td className="tabular-nums text-emerald-700 font-medium">
-        {/* v3.3: Payter-committed amount when the session was card-initiated
+        {/* v3.3: terminal-committed amount when the session was card-initiated
             and matched; otherwise the price-sheet estimate, marked "est." */}
         {s.actual_revenue_usd != null ? (
-          <span title={`Payter committed amount${s.payter_ifd ? ` — ${s.payter_ifd.toLowerCase()}` : ''}`}>
+          <span title={`Card terminal committed amount${s.card_entry_mode ? ` — ${s.card_entry_mode.toLowerCase()}` : ''}`}>
             {`$${s.actual_revenue_usd.toFixed(2)}`}
           </span>
         ) : s.est_revenue_usd != null ? (

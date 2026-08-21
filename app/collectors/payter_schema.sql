@@ -74,8 +74,21 @@ CREATE TABLE IF NOT EXISTS payter_session_matches (
 --   meter_values_parsed / session CTEs).
 ALTER TABLE chargers ADD COLUMN IF NOT EXISTS payter_serial text UNIQUE;
 -- P6820211200171    → veefil-62100164  (ARG - Left,  Tritium RTM75)
--- P6820221300628    → veefil-602200077 (ARG - Right, Tritium RTM75)
+-- P6820232100602    → veefil-602200077 (ARG - Right / "Charger - B", Tritium RTM75)
 -- POL20245100755-50 → 104007972        (CL-A, Alpitronic HYC400)
 -- POL20243401437-72 → 104007978        (CL-B, Alpitronic HYC400)
 -- POL20245100346-16 → 104007977        (CL-C, Alpitronic HYC400)
 -- POL20245000996-82 → 104007979        (CL-D, Alpitronic HYC400)
+--
+-- ⚠ When a CCR is physically replaced, this column MUST be updated or the
+-- matcher silently stops matching that charger — no revenue, no Card Entry
+-- chip, no CC classification, and no error anywhere. ARG - Right's terminal was
+-- swapped twice (P6820221300628 → P6820210400097 on 2026-08-10 → P6820232100602
+-- on 2026-08-20, chargers updated each time). The 2026-08-20 swap was noticed
+-- only because Kris spotted missing cost/auth data in the dashboard, so
+-- match_sessions now logs a warning for any committed tap whose serial resolves
+-- to no charger. Retiring the old serial is safe *only because* payter_session_matches
+-- materialises station_id at match time, so already-matched history is frozen
+-- and survives the change. Before swapping a serial, confirm no APPROVED+
+-- COMMITTED tap on the OLD serial is still unmatched — those can never match
+-- once the join stops resolving. (ARG - Right had 0 pending at swap time.)

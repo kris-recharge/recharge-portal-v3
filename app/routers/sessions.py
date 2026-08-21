@@ -59,6 +59,18 @@ def _auth_method(start_tag: str, card_matched: bool = False) -> str:
                                   FE6DD7B2C3904F = ARG-Left; RFID cards land
                                   here too)
     blank (no StartTransaction) → unknown, left blank
+
+    A terminal's fixed tag is *not* configuration anywhere in this system — it
+    is only ever read off the incoming event, so the tag alone needs no code or
+    DB change when a terminal is swapped. Recorded here purely as history:
+    ARG-Right's P68 presented 161D77C442099C from 2026-01-07 until the terminal
+    was replaced on 2026-08-10, 5875910F1313E9 until it was replaced again on
+    2026-08-20, and AAE40F780E97C9 after that. All three are 14-char hex, so
+    they all land on this branch.
+
+    The tag being inert does NOT mean a swap is a no-op: the replacement carries
+    a new Payter serial, and chargers.payter_serial must be updated or the
+    matcher stops linking that charger's taps. See payter_schema.sql.
     """
     if card_matched:
         return "CC"

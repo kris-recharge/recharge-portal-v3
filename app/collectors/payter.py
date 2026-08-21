@@ -283,6 +283,26 @@ ORDER BY x.session_start ASC
 """
 
 
+# A committed tap whose serial resolves to no charger can never match: the
+# serial is the only bridge to a station_id. That happens whenever a CCR is
+# physically replaced and chargers.payter_serial is left pointing at the retired
+# terminal — which has now bitten ARG - Right twice (2026-08-10, 2026-08-20).
+# Nothing errors in that state, so surface it loudly instead.
+_UNMAPPED_SQL = """
+SELECT p.serial_number, count(*) AS taps, max(p.txn_timestamp) AS latest
+FROM payter_transactions p
+WHERE p.disposition = 'APPROVED'
+  AND p.state = 'COMMITTED'
+  AND NOT EXISTS (SELECT 1 FROM payter_session_matches m
+                  WHERE m.payter_id = p.payter_id)
+  AND NOT EXISTS (SELECT 1 FROM chargers c
+                  WHERE split_part(c.payter_serial, '-', 1)
+                      = split_part(p.serial_number, '-', 1))
+GROUP BY p.serial_number
+ORDER BY p.serial_number
+"""
+
+
 async def match_sessions(pool: asyncpg.Pool) -> int:
     """Link committed Payter transactions to charging sessions.
 
@@ -291,6 +311,15 @@ async def match_sessions(pool: asyncpg.Pool) -> int:
     session data hadn't landed yet). Returns the number of new matches.
     """
     async with pool.acquire() as conn:
+        for row in await conn.fetch(_UNMAPPED_SQL):
+            logger.warning(
+                "Payter serial %s has %d committed tap(s) (latest %s) but no "
+                "chargers.payter_serial row — revenue and card entry are missing "
+                "for that unit. If its CCR was replaced, update the charger's "
+                "Payter serial to the new terminal.",
+                row["serial_number"], row["taps"], row["latest"],
+            )
+
         pending = await conn.fetch(
             """
             SELECT p.payter_id, p.txn_timestamp, c.external_id AS station_id

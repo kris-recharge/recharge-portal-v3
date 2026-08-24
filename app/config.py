@@ -28,6 +28,23 @@ SMTP_PASSWORD    = os.environ["SMTP_PASSWORD"]
 ALERT_EMAIL_TO   = os.getenv("ALERT_EMAIL_TO", "info@rechargealaska.net")
 ALERT_EMAIL_FROM = os.getenv("ALERT_EMAIL_FROM", "info@rechargealaska.net")
 
+# ── Web Push (VAPID) ──────────────────────────────────────────────────────────
+# Generated once with `python -m app.push --generate-keys`. The public key is
+# handed to the browser at subscribe time; the private key signs the VAPID JWT
+# that Apple/Google push services validate. VAPID_SUBJECT must be a mailto: or
+# https: URL identifying the sender — Apple rejects pushes without it.
+#
+# Absent keys are not an error: push simply stays disabled and alerts keep going
+# out by email, so a VPS that hasn't had the keys added yet degrades quietly
+# instead of breaking the alert thread.
+VAPID_PUBLIC_KEY  = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT     = os.getenv("VAPID_SUBJECT", "mailto:info@rechargealaska.net").strip()
+PUSH_ENABLED      = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)
+
+if not PUSH_ENABLED:
+    _log.info("Web Push disabled — VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set.")
+
 # ── App ───────────────────────────────────────────────────────────────────────
 APP_MODE        = os.getenv("APP_MODE", "web").lower()
 # APP_ENV defaults to "production" so the safe behaviour (real auth) is the

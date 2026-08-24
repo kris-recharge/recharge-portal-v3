@@ -11,7 +11,7 @@ from .collectors.scheduler import start_collector_scheduler, stop_collector_sche
 from .config import ALLOWED_ORIGINS
 from .db import close_pool, create_pool
 from .routers import (
-    admin, alerts_config, alerts_sse, analytics,
+    admin, alerts_config, alerts_push, alerts_sse, analytics,
     connectivity, export, sessions, status,
 )
 from .routers import utility
@@ -34,6 +34,47 @@ CREATE TABLE IF NOT EXISTS alert_subscriptions (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, alert_type)
 );
+
+-- ── Alert delivery channels (v3.4) ───────────────────────────────────────────
+-- `enabled` stays the master switch: it decides whether the user is subscribed
+-- at all, and drives BOTH the Alert History tab and the in-app banner. The two
+-- columns below pick which channels a subscribed alert is actually delivered
+-- through. email_enabled defaults true so the migration is a no-op for existing
+-- subscribers (they keep getting the emails they get today); push_enabled
+-- defaults false so nobody is opted into push without asking for it.
+ALTER TABLE alert_subscriptions
+    ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE alert_subscriptions
+    ADD COLUMN IF NOT EXISTS push_enabled  BOOLEAN NOT NULL DEFAULT false;
+
+-- ── Web Push device registrations (v3.4) ─────────────────────────────────────
+-- One row per browser/device that has granted notification permission. The
+-- endpoint is the push service URL issued by Apple/Google and is unique per
+-- device+origin, so it doubles as the natural key: re-subscribing the same
+-- device updates the existing row instead of accumulating duplicates.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      UUID        NOT NULL,
+    endpoint     TEXT        NOT NULL UNIQUE,
+    p256dh       TEXT        NOT NULL,
+    auth         TEXT        NOT NULL,
+    user_agent   TEXT        NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user
+    ON push_subscriptions (user_id);
+
+-- ── In-app banner scope (v3.4) ───────────────────────────────────────────────
+-- The SSE banner used to fan out every alert to every connected client with no
+-- per-user filtering, so a tenant scoped to one charger could see toasts for
+-- other tenants' sites. EVSE scope is now enforced server-side and is NOT
+-- optional. This flag only widens the *alert type* filter: false (default) =
+-- banners only for the types you are subscribed to; true = banners for every
+-- type, still limited to your own EVSEs.
+ALTER TABLE portal_users
+    ADD COLUMN IF NOT EXISTS banner_all_alert_types BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS fired_alerts (
     id          UUID        NOT NULL DEFAULT gen_random_uuid(),
@@ -258,6 +299,7 @@ CREATE TABLE IF NOT EXISTS maintenance_photos (
 -- RLS automatically. Anon/authenticated roles have no direct table access —
 -- all data access goes through the FastAPI backend only.
 ALTER TABLE alert_subscriptions       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_subscriptions        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fired_alerts              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE utility_accounts          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE utility_usage             ENABLE ROW LEVEL SECURITY;
@@ -1493,6 +1535,7 @@ app.include_router(export.router)
 app.include_router(admin.router)
 app.include_router(alerts_sse.router)
 app.include_router(alerts_config.router)
+app.include_router(alerts_push.router)
 app.include_router(utility.router)
 app.include_router(maintenance.router)
 app.include_router(me.router)

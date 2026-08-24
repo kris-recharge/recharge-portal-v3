@@ -122,11 +122,51 @@ docker exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 ---
 
+## 6b. Enable Web Push (v3.4, one-time)
+
+Push notifications replace the alert emails on phones/tablets. They need a VAPID
+keypair, which is generated once and then never changed.
+
+```bash
+docker exec rca_api_v3 python -m app.push --generate-keys
+```
+
+Paste the three printed lines into `/opt/rca-v3/.env`, then restart:
+
+```bash
+docker compose up -d rca_api_v3
+docker compose logs --tail=20 rca_api_v3   # must NOT say "Web Push disabled"
+```
+
+> **Do not regenerate the keys later.** Every registered device is bound to the
+> public key it subscribed with; new keys silently break every existing
+> subscription and each user has to re-enable notifications by hand.
+
+The Caddyfile block in step 6 also gained a `Content-Type` header for
+`/app/manifest.webmanifest` and a `no-cache` header for `/app/sw.js`. Both are
+required — without the manifest MIME type iOS will not treat the site as
+installable, and a cached service worker keeps stale push handling alive after a
+redeploy.
+
+### On each device (per user, per device)
+1. Open https://www.rechargealaska.net/app in Safari.
+2. Share → **Add to Home Screen**. (If the icon already existed, delete it and
+   re-add — iOS caches the web app config at install time and will not pick up
+   the new manifest otherwise.)
+3. Open the app from the Home Screen icon, go to **Alerts**.
+4. Tap **Enable Notifications**, accept the iOS prompt, then tap **Test**.
+5. In **Alert Subscriptions**, switch the alert types you want from Email to Push.
+
+---
+
 ## 7. Smoke test
 - Visit https://www.rechargealaska.net/app — should show login
 - Log in as kris.hall@rechargealaska.net — all tabs visible including Admin
 - Log in as another portal user — Admin tab hidden
 - Trigger a test alert (or check fired_alerts table has recent rows)
+- Alerts tab → **Test** button delivers a notification to the installed PWA
+- Confirm a non-admin tenant does NOT see banner toasts for other sites'
+  chargers (v3.4 scoped the SSE stream; before that it fanned out to everyone)
 
 ---
 

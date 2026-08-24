@@ -37,10 +37,18 @@ from .config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, DEV_BYPASS_AUTH
 @dataclass(frozen=True)
 class PortalUser:
     email: str
+    # Supabase auth uid. This is what alert_subscriptions.user_id and
+    # push_subscriptions.user_id are keyed by.
     user_id: str
     allowed_evse_ids: list[str] | None  # None = no restriction
     name: str = ""
     can_submit_pm: bool = False  # may log PMs/repairs on their own units
+    # portal_users.id — a DIFFERENT key from user_id above. The two were
+    # conflated before v3.4, which silently broke every alert_subscriptions →
+    # portal_users join: rows are written with the auth uid but were being
+    # looked up by portal_users.id, so opt-ins delivered nothing. Anything
+    # touching the portal_users table must use this field, never user_id.
+    portal_user_id: str = ""
 
 
 # ── Token cache (avoids a Supabase round-trip on every API call) ──────────────
@@ -117,7 +125,7 @@ def _fetch_portal_user(email: str) -> dict:
     """
     url = (
         f"{SUPABASE_URL.rstrip('/')}/rest/v1/portal_users"
-        f"?select=allowed_evse_ids,can_submit_pm,name"
+        f"?select=id,allowed_evse_ids,can_submit_pm,name"
         f"&email=ilike.{urllib.parse.quote(email.lower())}&limit=1"
     )
     req = urllib.request.Request(url, method="GET")
@@ -130,13 +138,13 @@ def _fetch_portal_user(email: str) -> dict:
     except urllib.error.HTTPError as e:
         if 400 <= e.code < 500:
             # PostgREST rejected the request — treat as "no provisioning" → deny.
-            return {"allowed_evse_ids": [], "can_submit_pm": False, "name": ""}
+            return {"allowed_evse_ids": [], "can_submit_pm": False, "name": "", "id": ""}
         raise _SupabaseUnreachable(f"portal_users lookup returned {e.code}")
     except Exception as e:
         raise _SupabaseUnreachable(str(e))
 
     if not data:
-        return {"allowed_evse_ids": [], "can_submit_pm": False, "name": ""}
+        return {"allowed_evse_ids": [], "can_submit_pm": False, "name": "", "id": ""}
 
     row = data[0]
     val = row.get("allowed_evse_ids")
@@ -150,6 +158,7 @@ def _fetch_portal_user(email: str) -> dict:
         "allowed_evse_ids": allowed,
         "can_submit_pm": bool(row.get("can_submit_pm")),
         "name": row.get("name") or "",
+        "id": str(row.get("id") or ""),
     }
 
 
@@ -208,10 +217,11 @@ async def get_current_user(
     if DEV_BYPASS_AUTH:
         return PortalUser(
             email="kris.hall@rechargealaska.net",
-            user_id="37553d35-318b-4587-ac86-2ee346b9c4ca",
+            user_id="a3377629-be5f-4180-b0ba-d96c4c4bad15",          # auth uid
             allowed_evse_ids=None,
             name="Kris Hall",
             can_submit_pm=True,
+            portal_user_id="37553d35-318b-4587-ac86-2ee346b9c4ca",   # portal_users.id
         )
 
     access_token: str | None = None
@@ -281,6 +291,7 @@ async def get_current_user(
         allowed_evse_ids=perms["allowed_evse_ids"],
         name=perms["name"],
         can_submit_pm=perms["can_submit_pm"],
+        portal_user_id=perms.get("id", ""),
     )
     _cache[ck] = (portal_user, time.monotonic() + _CACHE_TTL)
     return portal_user

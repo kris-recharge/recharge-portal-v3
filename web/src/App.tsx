@@ -17,6 +17,7 @@ import { MaintenanceTab }  from './pages/MaintenanceTab'
 import { UtilityTab }      from './pages/UtilityTab'   // v3.2
 import { AdminTab }        from './pages/AdminTab'
 import { AlertBanner }     from './components/AlertBanner'
+import { syncPush }        from './lib/push'
 import { LogOut, Zap, Mail } from 'lucide-react'
 
 type Tab = 'sessions' | 'status' | 'connectivity' | 'connectors' | 'export' | 'alerts' | 'maintenance' | 'utility' | 'admin'
@@ -59,6 +60,14 @@ export default function App() {
 
     return () => listener.subscription.unsubscribe()
   }, [])
+
+  // Register the service worker and heal a rotated push subscription once
+  // signed in. Never prompts — enabling push is an explicit action in the
+  // Alerts tab; this only keeps an existing registration current.
+  useEffect(() => {
+    if (!userEmail) return
+    void syncPush()
+  }, [userEmail])
 
   // Load capabilities (is_admin / can_submit_pm) from the backend once signed in.
   useEffect(() => {

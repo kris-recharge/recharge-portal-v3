@@ -331,12 +331,36 @@ export type AlertType = 'offline_idle' | 'offline_mid_session' | 'fault' | 'susp
 
 export interface AlertSubscription {
   alert_type: AlertType
+  /** Master switch: subscribed at all? Drives history + in-app banner. */
   enabled: boolean
+  /** Deliver by email. */
+  email_enabled: boolean
+  /** Deliver by Web Push to registered devices. */
+  push_enabled: boolean
+}
+
+export interface PushDevice {
+  id: string
+  user_agent: string
+  created_at_ak: string
+  last_seen_at_ak: string
+  is_current: boolean
 }
 
 export interface AlertSubscriptionsResponse {
   email: string
   subscriptions: AlertSubscription[]
+  push_supported: boolean
+  vapid_public_key: string
+  push_devices: PushDevice[]
+  banner_all_alert_types: boolean
+}
+
+export interface PushSubscribePayload {
+  endpoint: string
+  p256dh: string
+  auth: string
+  user_agent: string
 }
 
 export interface FiredAlert {
@@ -366,6 +390,36 @@ export function saveAlertSubscriptions(
 
 export function fetchAlertHistory(): Promise<AlertHistoryResponse> {
   return apiFetch<AlertHistoryResponse>('/api/alerts/history')
+}
+
+export function setBannerScope(bannerAllAlertTypes: boolean): Promise<AlertSubscriptionsResponse> {
+  return apiFetch<AlertSubscriptionsResponse>('/api/alerts/banner-scope', {
+    method: 'POST',
+    body:   JSON.stringify({ banner_all_alert_types: bannerAllAlertTypes }),
+  })
+}
+
+// ── Web Push device registration ───────────────────────────────────────────
+
+export function subscribePush(payload: PushSubscribePayload): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>('/api/alerts/push/subscribe', {
+    method: 'POST',
+    body:   JSON.stringify(payload),
+  })
+}
+
+export function unsubscribePush(payload: PushSubscribePayload): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>('/api/alerts/push/unsubscribe', {
+    method: 'POST',
+    body:   JSON.stringify(payload),
+  })
+}
+
+export function sendTestPush(): Promise<{ ok: boolean; delivered: number; devices: number }> {
+  return apiFetch<{ ok: boolean; delivered: number; devices: number }>(
+    '/api/alerts/push/test',
+    { method: 'POST' },
+  )
 }
 
 // ── Current user (capabilities) ─────────────────────────────────────────────────

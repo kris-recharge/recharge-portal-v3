@@ -9,9 +9,21 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter
 
+from fastapi import Request
+
 from ..auth import CurrentUser
+from ..config import VAPID_PUBLIC_KEY
 from ..db import acquire
-from ..models import ALERT_TYPES, AlertHistoryResponse, AlertSubscription, AlertSubscriptionsResponse, FiredAlert
+from ..models import (
+    ALERT_TYPES,
+    AlertHistoryResponse,
+    AlertSubscription,
+    AlertSubscriptionsResponse,
+    BannerScopeRequest,
+    FiredAlert,
+    PushDevice,
+)
+from ..push import push_available
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -29,24 +41,44 @@ def _fmt_ak(dt) -> str:
 # ── GET subscriptions ─────────────────────────────────────────────────────────
 
 @router.get("/subscriptions", response_model=AlertSubscriptionsResponse)
-async def get_subscriptions(user: CurrentUser):
-    """Return the current user's alert subscription state for all 4 alert types."""
+async def get_subscriptions(user: CurrentUser, request: Request = None):  # noqa: B008
+    """Return the current user's alert subscriptions, channels, and push devices."""
+    current_ua = request.headers.get("user-agent", "") if request is not None else ""
+
     async with acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT alert_type, enabled
+            SELECT alert_type, enabled, email_enabled, push_enabled
             FROM alert_subscriptions
             WHERE user_id = $1::uuid
             """,
             user.user_id,
         )
+        devices = await conn.fetch(
+            """
+            SELECT id::text, user_agent, created_at, last_seen_at
+            FROM push_subscriptions
+            WHERE user_id = $1::uuid
+            ORDER BY created_at
+            """,
+            user.user_id,
+        )
+        # portal_users is keyed by portal_user_id, NOT the auth uid.
+        prefs = await conn.fetchrow(
+            "SELECT banner_all_alert_types FROM portal_users WHERE id = $1::uuid",
+            user.portal_user_id,
+        ) if user.portal_user_id else None
 
-    enabled_map = {r["alert_type"]: r["enabled"] for r in rows}
+    by_type = {r["alert_type"]: r for r in rows}
 
     subscriptions = [
         AlertSubscription(
             alert_type=at,
-            enabled=enabled_map.get(at, False),   # default: opt-in (off)
+            # default: opt-in (off). email_enabled defaults true so that turning
+            # a brand-new subscription on behaves the way it always has.
+            enabled=bool(by_type[at]["enabled"]) if at in by_type else False,
+            email_enabled=bool(by_type[at]["email_enabled"]) if at in by_type else True,
+            push_enabled=bool(by_type[at]["push_enabled"]) if at in by_type else False,
         )
         for at in ALERT_TYPES
     ]
@@ -54,6 +86,19 @@ async def get_subscriptions(user: CurrentUser):
     return AlertSubscriptionsResponse(
         email=user.email,
         subscriptions=subscriptions,
+        push_supported=push_available(),
+        vapid_public_key=VAPID_PUBLIC_KEY,
+        push_devices=[
+            PushDevice(
+                id=d["id"],
+                user_agent=d["user_agent"],
+                created_at_ak=_fmt_ak(d["created_at"]),
+                last_seen_at_ak=_fmt_ak(d["last_seen_at"]),
+                is_current=bool(current_ua) and d["user_agent"] == current_ua,
+            )
+            for d in devices
+        ],
+        banner_all_alert_types=bool(prefs["banner_all_alert_types"]) if prefs else False,
     )
 
 
@@ -63,6 +108,7 @@ async def get_subscriptions(user: CurrentUser):
 async def update_subscriptions(
     user: CurrentUser,
     body: list[AlertSubscription],
+    request: Request = None,  # noqa: B008
 ):
     """Upsert all 4 alert type preferences for the current user."""
     async with acquire() as conn:
@@ -71,19 +117,46 @@ async def update_subscriptions(
                 continue
             await conn.execute(
                 """
-                INSERT INTO alert_subscriptions (user_id, alert_type, enabled, updated_at)
-                VALUES ($1::uuid, $2, $3, NOW())
+                INSERT INTO alert_subscriptions
+                    (user_id, alert_type, enabled, email_enabled, push_enabled, updated_at)
+                VALUES ($1::uuid, $2, $3, $4, $5, NOW())
                 ON CONFLICT (user_id, alert_type) DO UPDATE
-                    SET enabled    = EXCLUDED.enabled,
-                        updated_at = NOW()
+                    SET enabled       = EXCLUDED.enabled,
+                        email_enabled = EXCLUDED.email_enabled,
+                        push_enabled  = EXCLUDED.push_enabled,
+                        updated_at    = NOW()
                 """,
                 user.user_id,
                 sub.alert_type,
                 sub.enabled,
+                sub.email_enabled,
+                sub.push_enabled,
             )
 
     # Return the updated state
-    return await get_subscriptions(user)
+    return await get_subscriptions(user, request)
+
+
+# ── Banner scope ──────────────────────────────────────────────────────────────
+
+@router.post("/banner-scope", response_model=AlertSubscriptionsResponse)
+async def set_banner_scope(
+    user: CurrentUser,
+    body: BannerScopeRequest,
+    request: Request = None,  # noqa: B008
+):
+    """Widen or narrow which alert *types* raise an in-app banner.
+
+    EVSE scope is never affected by this — a user always and only sees banners
+    for chargers in their own allowed_evse_ids, enforced in the SSE router.
+    """
+    async with acquire() as conn:
+        await conn.execute(
+            "UPDATE portal_users SET banner_all_alert_types = $2 WHERE id = $1::uuid",
+            user.portal_user_id,
+            body.banner_all_alert_types,
+        )
+    return await get_subscriptions(user, request)
 
 
 # ── GET history ───────────────────────────────────────────────────────────────

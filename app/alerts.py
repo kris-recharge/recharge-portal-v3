@@ -47,6 +47,7 @@ from .connector_counts import accumulate as accumulate_connector_counts
 from .connector_counts import ensure_tables as ensure_connector_count_tables
 from .constants import display_name, get_all_station_ids
 from .db import get_conn_sync
+from .push import build_payload, push_available, send_to_subscriptions
 
 # How many poll cycles between fired_alerts cleanup runs (60s × 240 = ~4 hours)
 _CLEANUP_EVERY_N = 240
@@ -82,16 +83,33 @@ _mid_session_seen: set[tuple[str, str]] = set()
 
 # ── SSE broadcast (lazy import to avoid circular import at module load) ────────
 
-def _broadcast(alert_type: str, evse_name: str, message: str, timestamp_ak: str) -> None:
-    """Push alert to all connected SSE clients (browser banner)."""
+def _broadcast(
+    alert_type: str,
+    asset_id: str,
+    evse_name: str,
+    message: str,
+    timestamp_ak: str,
+    subscriber_ids: set[str],
+) -> None:
+    """Push alert to the SSE clients entitled to see it (browser banner).
+
+    asset_id and subscriber_ids are what let the SSE router apply EVSE and
+    alert-type scope. Before v3.4 this fanned out to every connected client
+    regardless of tenant, which put other sites' charger names in front of
+    users scoped to a single unit.
+    """
     try:
         from .routers.alerts_sse import broadcast_alert  # noqa: PLC0415
-        broadcast_alert({
-            "alert_type":   alert_type,
-            "evse_name":    evse_name,
-            "message":      message,
-            "timestamp_ak": timestamp_ak,
-        })
+        broadcast_alert(
+            {
+                "alert_type":   alert_type,
+                "asset_id":     asset_id,
+                "evse_name":    evse_name,
+                "message":      message,
+                "timestamp_ak": timestamp_ak,
+            },
+            subscriber_ids=subscriber_ids,
+        )
     except Exception as exc:
         logger.warning("SSE broadcast failed: %s", exc)
 
@@ -117,6 +135,56 @@ def _send_email_to(to_addr: str, subject: str, body_html: str) -> None:
         logger.error("Failed to send alert email to %s: %s", to_addr, exc)
 
 
+# ── Web Push ──────────────────────────────────────────────────────────────────
+
+def _send_push(
+    conn,
+    user_ids: list[str],
+    alert_type: str,
+    subject: str,
+    evse_name: str,
+    message: str,
+    timestamp_ak: str,
+) -> None:
+    """Deliver one alert to every registered device of the given users.
+
+    A user may have several rows here (phone + iPad + laptop); each is its own
+    push subscription and gets its own notification. Dead endpoints are pruned
+    inside send_to_subscriptions.
+    """
+    if not push_available():
+        logger.debug("Push subscribers exist but push is not configured — skipping.")
+        return
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id::text, endpoint, p256dh, auth
+                FROM push_subscriptions
+                WHERE user_id = ANY(%s::uuid[])
+                """,
+                (user_ids,),
+            )
+            subs = [
+                {"user_id": r[0], "endpoint": r[1], "p256dh": r[2], "auth": r[3]}
+                for r in cur.fetchall()
+            ]
+    except Exception as exc:
+        logger.error("Failed to load push subscriptions: %s", exc)
+        return
+
+    if not subs:
+        return
+
+    # The email subject already reads as a headline ("⚠ Charger Offline — ARG - Left"),
+    # so it doubles as the notification title.
+    payload = build_payload(alert_type, subject, evse_name, message, timestamp_ak)
+    delivered = send_to_subscriptions(conn, subs, payload)
+    logger.info("Push: %d/%d device(s) notified for %s on %s",
+                delivered, len(subs), alert_type, evse_name)
+
+
 # ── Unified fire-alert helper ─────────────────────────────────────────────────
 
 def _fire_alert(
@@ -131,19 +199,35 @@ def _fire_alert(
 ) -> None:
     """
     1. Find all users subscribed to alert_type who have asset_id in their allowed EVSEs.
-    2. Send each an individual email.
+    2. Deliver on each channel that user enabled: email, Web Push, or both.
     3. Insert one row into fired_alerts (logged once per firing).
-    4. Push SSE broadcast to all open browser connections.
+    4. Push an SSE broadcast, scoped to the entitled subscribers only.
+
+    `enabled` is the master subscription switch — it decides who is in scope at
+    all, and therefore who sees the alert in History and in the banner.
+    email_enabled / push_enabled then choose the delivery channels, so a user
+    can move to push-only without losing the alert from the rest of the UI.
     """
     # ── Find subscribed recipients ────────────────────────────────────────────
-    recipients: list[str] = []
+    email_targets:  list[str] = []
+    push_user_ids:  list[str] = []
+    subscriber_ids: set[str]  = set()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT pu.email
+                SELECT asub.user_id::text, pu.email,
+                       asub.email_enabled, asub.push_enabled
                 FROM alert_subscriptions asub
-                JOIN portal_users pu ON pu.id = asub.user_id
+                -- alert_subscriptions.user_id is the SUPABASE AUTH UID, which is
+                -- NOT portal_users.id. This join used to be
+                -- `portal_users pu ON pu.id = asub.user_id`, comparing the two
+                -- unrelated keys — so every subscription saved through the UI
+                -- matched nothing and delivered nothing (pm_due_14d/pm_overdue
+                -- never fired at all). Resolve auth uid → email → portal_users,
+                -- case-insensitively, the same way auth.py does its lookup.
+                JOIN auth.users  au ON au.id = asub.user_id
+                JOIN portal_users pu ON lower(pu.email) = lower(au.email)
                 WHERE asub.alert_type = %s
                   AND asub.enabled    = true
                   AND pu.active       = true
@@ -154,13 +238,22 @@ def _fire_alert(
                 """,
                 (alert_type, asset_id),
             )
-            recipients = [row[0] for row in cur.fetchall()]
+            for user_id, email, email_on, push_on in cur.fetchall():
+                subscriber_ids.add(user_id)
+                if email_on:
+                    email_targets.append(email)
+                if push_on:
+                    push_user_ids.append(user_id)
     except Exception as exc:
         logger.error("Failed to query alert subscriptions: %s", exc)
 
     # ── Send per-user emails ──────────────────────────────────────────────────
-    for email in recipients:
+    for email in email_targets:
         _send_email_to(email, subject, body_html)
+
+    # ── Send Web Push to every registered device of the push subscribers ──────
+    if push_user_ids:
+        _send_push(conn, push_user_ids, alert_type, subject, evse_name, message, timestamp_ak)
 
     # ── Log to fired_alerts (once per firing, regardless of recipient count) ──
     try:
@@ -176,8 +269,8 @@ def _fire_alert(
     except Exception as exc:
         logger.error("Failed to log fired_alert: %s", exc)
 
-    # ── SSE browser banner ────────────────────────────────────────────────────
-    _broadcast(alert_type, evse_name, message, timestamp_ak)
+    # ── SSE browser banner (scoped to entitled subscribers) ───────────────────
+    _broadcast(alert_type, asset_id, evse_name, message, timestamp_ak, subscriber_ids)
 
 
 # ── Cleanup old fired_alerts ──────────────────────────────────────────────────

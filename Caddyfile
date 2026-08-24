@@ -16,6 +16,18 @@ dashboard.rechargealaska.net {
     # ── v3 Frontend (React SPA) ──────────────────────────────────────────────
     handle /app* {
         uri strip_prefix /app
+
+        # PWA (v3.4). Go's mime package doesn't know .webmanifest, so set it
+        # explicitly — without application/manifest+json the browser may ignore
+        # the manifest, and on iOS no manifest means no Web Push at all.
+        @manifest path /manifest.webmanifest
+        header @manifest Content-Type "application/manifest+json"
+
+        # The service worker must never be served stale: a cached sw.js keeps an
+        # old push handler alive on installed devices after a redeploy.
+        @sw path /sw.js
+        header @sw Cache-Control "no-cache"
+
         root * /srv/app
         try_files {path} /index.html
         file_server

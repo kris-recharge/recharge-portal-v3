@@ -192,12 +192,40 @@ ALERT_TYPES = ("offline_idle", "offline_mid_session", "fault", "suspicious_vid",
 
 class AlertSubscription(BaseModel):
     alert_type: str   # one of ALERT_TYPES
-    enabled: bool
+    enabled: bool                  # master switch: subscribed at all?
+    email_enabled: bool = True     # deliver by email
+    push_enabled: bool = False     # deliver by Web Push
+
+
+class PushDevice(BaseModel):
+    id: str
+    user_agent: str
+    created_at_ak: str
+    last_seen_at_ak: str
+    is_current: bool = False
 
 
 class AlertSubscriptionsResponse(BaseModel):
     email: str
     subscriptions: list[AlertSubscription]
+    # Server-side push readiness (VAPID keys present). When false the frontend
+    # hides the push controls entirely rather than offering a toggle that
+    # silently does nothing.
+    push_supported: bool = False
+    vapid_public_key: str = ""
+    push_devices: list[PushDevice] = []
+    banner_all_alert_types: bool = False
+
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+    user_agent: str = ""
+
+
+class BannerScopeRequest(BaseModel):
+    banner_all_alert_types: bool
 
 
 class FiredAlert(BaseModel):

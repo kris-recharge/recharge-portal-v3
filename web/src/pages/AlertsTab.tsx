@@ -502,10 +502,11 @@ export function AlertsTab() {
       <div className="bg-white rounded-xl border border-gray-200 px-6 py-4">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h2 className="font-semibold text-gray-900 text-sm">In-App Banners</h2>
+            <h2 className="font-semibold text-gray-900 text-sm">Show All Alert Types In-App</h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Toasts shown in the top-right while the dashboard is open. Banners are
-              always limited to your own chargers.
+              While you're signed in, show every alert type on your chargers — fault
+              codes, offline, suspicious VID, PM — in the toasts and the history below.
+              Subscriptions above only control what gets emailed or pushed to you.
             </p>
           </div>
           <button
@@ -525,8 +526,8 @@ export function AlertsTab() {
         </div>
         <p className="text-xs text-gray-400 mt-2">
           {subData?.banner_all_alert_types
-            ? 'Showing banners for every alert type on your chargers.'
-            : 'Showing banners only for the alert types you subscribed to above.'}
+            ? 'On — showing every alert type for your chargers. Always limited to your own EVSEs.'
+            : 'Off — narrowed to the alert types you subscribed to above.'}
         </p>
       </div>
 
@@ -536,7 +537,7 @@ export function AlertsTab() {
           <div>
             <h2 className="font-semibold text-gray-900 text-sm">Alert History</h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Last 15 days · filtered to your EVSEs and subscribed alert types
+              Last 15 days · always limited to your EVSEs
             </p>
           </div>
           {histData && (
@@ -553,7 +554,9 @@ export function AlertsTab() {
             <BellOff size={28} className="mx-auto text-gray-300 mb-2" />
             <p className="text-sm text-gray-400">No alerts in the last 15 days</p>
             {!anyEnabled && (
-              <p className="text-xs text-gray-400 mt-1">Enable alert types above to start receiving notifications.</p>
+              <p className="text-xs text-gray-400 mt-1">
+                Nothing has fired recently. Enable alert types above to also get them by email or push.
+              </p>
             )}
           </div>
         ) : (

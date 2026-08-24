@@ -7,10 +7,11 @@ neither is client-side — an unscoped event never reaches the browser at all:
 
   1. EVSE scope — always enforced. A client only receives alerts for asset_ids
      in its own allowed_evse_ids (None = unrestricted, i.e. staff).
-  2. Alert-type scope — the set of types the user is subscribed to, computed by
-     the alert thread and passed in as `subscriber_ids`. Users who set
-     portal_users.banner_all_alert_types receive every type instead, still
-     limited by rule 1.
+  2. Alert-type scope — by default OFF, because portal_users.banner_all_alert_types
+     defaults true: while you are logged in you see every alert type on your own
+     chargers. A user who turns that flag off is narrowed to the types they are
+     subscribed to (`subscriber_ids`, computed by the alert thread). Either way
+     rule 1 still applies.
 
 Both the user identity and the allowed EVSE list are captured from the
 authenticated session at connect time, so a client cannot widen its own scope.
@@ -112,7 +113,10 @@ async def alert_stream(user: CurrentUser):
                 "SELECT banner_all_alert_types FROM portal_users WHERE id = $1::uuid",
                 user.portal_user_id,
             )
-    all_types = bool(row["banner_all_alert_types"]) if row else False
+    # Default TRUE: a logged-in user sees every alert type on their own
+    # chargers. Failing open here is safe because it widens TYPE only — EVSE
+    # scope above is independent and always enforced.
+    all_types = bool(row["banner_all_alert_types"]) if row else True
 
     client = _Client(
         queue=asyncio.Queue(maxsize=50),

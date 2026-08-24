@@ -98,7 +98,7 @@ async def get_subscriptions(user: CurrentUser, request: Request = None):  # noqa
             )
             for d in devices
         ],
-        banner_all_alert_types=bool(prefs["banner_all_alert_types"]) if prefs else False,
+        banner_all_alert_types=bool(prefs["banner_all_alert_types"]) if prefs else True,
     )
 
 
@@ -165,49 +165,54 @@ async def set_banner_scope(
 async def get_alert_history(user: CurrentUser):
     """
     Return fired alerts from the last 15 days that:
-    - Are for an EVSE the user is allowed to see
-    - Match an alert type the user is currently subscribed to
+    - Are for an EVSE the user is allowed to see (always enforced)
+    - Match an alert type the user should see in-app
+
+    The type filter follows the same rule as the banner: by default a logged-in
+    user sees EVERY alert type on their own chargers, because a toast you can't
+    find again in History is a dead end. Only a user who turned
+    banner_all_alert_types off is narrowed to their subscribed types.
     """
     allowed = user.allowed_evse_ids  # None = all EVSEs
 
     async with acquire() as conn:
-        if allowed is None:
-            # User has access to all EVSEs — just filter by subscriptions
-            rows = await conn.fetch(
-                """
-                SELECT fa.id::text, fa.fired_at, fa.alert_type, fa.evse_name, fa.message
-                FROM fired_alerts fa
-                WHERE fa.fired_at >= NOW() - INTERVAL '15 days'
-                  AND EXISTS (
+        prefs = await conn.fetchrow(
+            "SELECT banner_all_alert_types FROM portal_users WHERE id = $1::uuid",
+            user.portal_user_id,
+        ) if user.portal_user_id else None
+        all_types = bool(prefs["banner_all_alert_types"]) if prefs else True
+
+        # Build the WHERE clause incrementally so the $n placeholders stay
+        # contiguous — Postgres rejects a query that uses $2 without $1, which
+        # is exactly what happens if an optional clause is simply omitted.
+        where = ["fa.fired_at >= NOW() - INTERVAL '15 days'"]
+        args: list = []
+
+        if allowed is not None:
+            args.append(allowed)
+            where.append(f"fa.asset_id = ANY(${len(args)}::text[])")
+
+        if not all_types:
+            args.append(user.user_id)
+            where.append(
+                f"""EXISTS (
                       SELECT 1 FROM alert_subscriptions asub
-                      WHERE asub.user_id   = $1::uuid
+                      WHERE asub.user_id    = ${len(args)}::uuid
                         AND asub.alert_type = fa.alert_type
                         AND asub.enabled    = true
-                  )
-                ORDER BY fa.fired_at DESC
-                LIMIT 500
-                """,
-                user.user_id,
+                  )"""
             )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT fa.id::text, fa.fired_at, fa.alert_type, fa.evse_name, fa.message
-                FROM fired_alerts fa
-                WHERE fa.fired_at >= NOW() - INTERVAL '15 days'
-                  AND fa.asset_id = ANY($2::text[])
-                  AND EXISTS (
-                      SELECT 1 FROM alert_subscriptions asub
-                      WHERE asub.user_id   = $1::uuid
-                        AND asub.alert_type = fa.alert_type
-                        AND asub.enabled    = true
-                  )
-                ORDER BY fa.fired_at DESC
-                LIMIT 500
-                """,
-                user.user_id,
-                allowed,
-            )
+
+        rows = await conn.fetch(
+            f"""
+            SELECT fa.id::text, fa.fired_at, fa.alert_type, fa.evse_name, fa.message
+            FROM fired_alerts fa
+            WHERE {' AND '.join(where)}
+            ORDER BY fa.fired_at DESC
+            LIMIT 500
+            """,
+            *args,
+        )
 
     alerts = [
         FiredAlert(

@@ -70,11 +70,21 @@ CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user
 -- The SSE banner used to fan out every alert to every connected client with no
 -- per-user filtering, so a tenant scoped to one charger could see toasts for
 -- other tenants' sites. EVSE scope is now enforced server-side and is NOT
--- optional. This flag only widens the *alert type* filter: false (default) =
--- banners only for the types you are subscribed to; true = banners for every
--- type, still limited to your own EVSEs.
+-- optional.
+--
+-- This flag controls only the *alert type* filter for the in-app views (banner
+-- toasts + Alert History). It DEFAULTS TRUE: while you are logged in you see
+-- everything happening on your own chargers — vendor fault codes, offline,
+-- suspicious VID, PM — not only the types you subscribed to. Subscriptions
+-- decide what gets pushed or emailed to you when you are NOT looking; they are
+-- not meant to hide events from the dashboard itself. Set false to narrow the
+-- in-app views to your subscribed types only.
 ALTER TABLE portal_users
-    ADD COLUMN IF NOT EXISTS banner_all_alert_types BOOLEAN NOT NULL DEFAULT false;
+    ADD COLUMN IF NOT EXISTS banner_all_alert_types BOOLEAN NOT NULL DEFAULT true;
+-- Correct the default even if an earlier build already added the column as
+-- DEFAULT false (rows created under that default keep their stored value).
+ALTER TABLE portal_users
+    ALTER COLUMN banner_all_alert_types SET DEFAULT true;
 
 CREATE TABLE IF NOT EXISTS fired_alerts (
     id          UUID        NOT NULL DEFAULT gen_random_uuid(),

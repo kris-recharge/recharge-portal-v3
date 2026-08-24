@@ -214,7 +214,7 @@ class AlertSubscriptionsResponse(BaseModel):
     push_supported: bool = False
     vapid_public_key: str = ""
     push_devices: list[PushDevice] = []
-    banner_all_alert_types: bool = False
+    banner_all_alert_types: bool = True
 
 
 class PushSubscribeRequest(BaseModel):

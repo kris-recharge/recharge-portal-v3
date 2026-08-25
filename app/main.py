@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user
     ON push_subscriptions (user_id);
 
+-- device_label is supplied by the browser, not parsed from the user agent.
+-- iPadOS 13+ requests desktop sites by default and sends a macOS user agent
+-- ("Macintosh; Intel Mac OS X 10_15_7"), so an iPad is indistinguishable from a
+-- Mac by UA alone -- it showed up in the device list as "Mac". The client can
+-- tell the difference (a Macintosh reporting touch points is an iPad) and sends
+-- the answer along.
+ALTER TABLE push_subscriptions
+    ADD COLUMN IF NOT EXISTS device_label TEXT NOT NULL DEFAULT '';
+
 -- ── In-app banner scope (v3.4) ───────────────────────────────────────────────
 -- The SSE banner used to fan out every alert to every connected client with no
 -- per-user filtering, so a tenant scoped to one charger could see toasts for

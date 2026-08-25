@@ -20,6 +20,7 @@ import {
   enablePush,
   hasLocalSubscription,
   isStandalone,
+  localEndpointHash,
   permissionState,
   pushSupported,
 } from '../lib/push'
@@ -131,8 +132,13 @@ export function AlertsTab() {
   const [pushBusy, setPushBusy] = useState(false)
   const [pushMsg, setPushMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
+  // Fingerprint of this browser's own subscription, used to mark "this device"
+  // in the list. Cannot be done by user agent: an iPad reports itself as a Mac.
+  const [myHash, setMyHash] = useState<string | null>(null)
+
   const refreshDeviceState = useCallback(async () => {
     setDeviceOn(await hasLocalSubscription())
+    setMyHash(await localEndpointHash())
   }, [])
 
   useEffect(() => { void refreshDeviceState() }, [refreshDeviceState])
@@ -370,8 +376,10 @@ export function AlertsTab() {
                     {subData!.push_devices.map(d => (
                       <li key={d.id} className="flex items-center gap-2 text-xs text-gray-500">
                         <Monitor size={12} className="shrink-0 text-gray-300" />
-                        <span className="truncate flex-1">{describeDevice(d.user_agent)}</span>
-                        {d.is_current && (
+                        <span className="truncate flex-1">
+                          {d.label || describeDevice(d.user_agent)}
+                        </span>
+                        {(d.endpoint_hash && d.endpoint_hash === myHash) && (
                           <span className="shrink-0 px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 font-medium">
                             this device
                           </span>
@@ -646,14 +654,19 @@ function ChannelChip({
   )
 }
 
-// ── Device label ──────────────────────────────────────────────────────────────
-/** Turn a raw user-agent into something a person can recognise in a list. */
+// ── Device label fallback ─────────────────────────────────────────────────────
+/**
+ * Used only for devices registered before the client started sending a label.
+ * Inherently imprecise: iPadOS sends a macOS user agent, so an older iPad row
+ * still reads "Mac" until that device re-registers. Opening the app on it is
+ * enough — syncPush() re-sends the subscription and backfills the real label.
+ */
 function describeDevice(ua: string): string {
   if (!ua) return 'Unknown device'
   if (/iPad/i.test(ua)) return 'iPad'
   if (/iPhone/i.test(ua)) return 'iPhone'
   if (/Android/i.test(ua)) return 'Android device'
-  if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac'
+  if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac or iPad'
   if (/Windows/i.test(ua)) return 'Windows PC'
   return 'Other device'
 }

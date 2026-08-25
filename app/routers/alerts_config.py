@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import timezone
 from zoneinfo import ZoneInfo
 
@@ -43,8 +44,6 @@ def _fmt_ak(dt) -> str:
 @router.get("/subscriptions", response_model=AlertSubscriptionsResponse)
 async def get_subscriptions(user: CurrentUser, request: Request = None):  # noqa: B008
     """Return the current user's alert subscriptions, channels, and push devices."""
-    current_ua = request.headers.get("user-agent", "") if request is not None else ""
-
     async with acquire() as conn:
         rows = await conn.fetch(
             """
@@ -56,7 +55,7 @@ async def get_subscriptions(user: CurrentUser, request: Request = None):  # noqa
         )
         devices = await conn.fetch(
             """
-            SELECT id::text, user_agent, created_at, last_seen_at
+            SELECT id::text, user_agent, device_label, endpoint, created_at, last_seen_at
             FROM push_subscriptions
             WHERE user_id = $1::uuid
             ORDER BY created_at
@@ -92,9 +91,10 @@ async def get_subscriptions(user: CurrentUser, request: Request = None):  # noqa
             PushDevice(
                 id=d["id"],
                 user_agent=d["user_agent"],
+                label=d["device_label"],
                 created_at_ak=_fmt_ak(d["created_at"]),
                 last_seen_at_ak=_fmt_ak(d["last_seen_at"]),
-                is_current=bool(current_ua) and d["user_agent"] == current_ua,
+                endpoint_hash=hashlib.sha256(d["endpoint"].encode()).hexdigest()[:16],
             )
             for d in devices
         ],

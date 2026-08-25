@@ -342,8 +342,10 @@ export interface AlertSubscription {
 export interface PushDevice {
   id: string
   user_agent: string
+  label: string
   created_at_ak: string
   last_seen_at_ak: string
+  endpoint_hash: string
   is_current: boolean
 }
 
@@ -361,6 +363,7 @@ export interface PushSubscribePayload {
   p256dh: string
   auth: string
   user_agent: string
+  device_label: string
 }
 
 export interface FiredAlert {

@@ -61,6 +61,44 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
   return output
 }
 
+/**
+ * Name this device for the registered-devices list.
+ *
+ * The user agent alone cannot do this. iPadOS 13+ requests desktop sites by
+ * default and reports itself as "Macintosh; Intel Mac OS X 10_15_7", identical
+ * to a real Mac — which is why an iPad showed up in the list as "Mac". The
+ * giveaway is touch: a Macintosh reporting more than one touch point is an iPad.
+ */
+export function detectDevice(): string {
+  const ua = navigator.userAgent
+  const touchPoints = navigator.maxTouchPoints ?? 0
+
+  if (/iPhone/i.test(ua)) return 'iPhone'
+  if (/iPad/i.test(ua)) return 'iPad'
+  if (/Macintosh/i.test(ua)) return touchPoints > 1 ? 'iPad' : 'Mac'
+  if (/Android/i.test(ua)) return /Mobile/i.test(ua) ? 'Android phone' : 'Android tablet'
+  if (/Windows/i.test(ua)) return 'Windows PC'
+  return 'Other device'
+}
+
+/** sha256(endpoint)[:16] — matches how the API fingerprints stored devices. */
+export async function endpointHash(endpoint: string): Promise<string> {
+  const bytes = new TextEncoder().encode(endpoint)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 16)
+}
+
+/** The fingerprint of this browser's own subscription, or null if unsubscribed. */
+export async function localEndpointHash(): Promise<string | null> {
+  if (!pushSupported()) return null
+  const reg = await navigator.serviceWorker.getRegistration(SW_SCOPE)
+  const sub = await reg?.pushManager.getSubscription()
+  return sub ? endpointHash(sub.endpoint) : null
+}
+
 function serialize(sub: PushSubscription) {
   const json = sub.toJSON() as { keys?: { p256dh?: string; auth?: string } }
   return {
@@ -68,6 +106,7 @@ function serialize(sub: PushSubscription) {
     p256dh: json.keys?.p256dh ?? '',
     auth: json.keys?.auth ?? '',
     user_agent: navigator.userAgent,
+    device_label: detectDevice(),
   }
 }
 
@@ -122,7 +161,7 @@ export async function disablePush(): Promise<void> {
   const reg = await navigator.serviceWorker.getRegistration(SW_SCOPE)
   const sub = await reg?.pushManager.getSubscription()
   if (!sub) return
-  await unsubscribePush({ endpoint: sub.endpoint, p256dh: '', auth: '', user_agent: '' })
+  await unsubscribePush({ endpoint: sub.endpoint, p256dh: '', auth: '', user_agent: '', device_label: '' })
   await sub.unsubscribe()
 }
 

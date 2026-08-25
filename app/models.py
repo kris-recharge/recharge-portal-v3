@@ -200,8 +200,13 @@ class AlertSubscription(BaseModel):
 class PushDevice(BaseModel):
     id: str
     user_agent: str
+    label: str = ""          # browser-supplied ("iPad", "iPhone", "Mac", …)
     created_at_ak: str
     last_seen_at_ak: str
+    # sha256(endpoint)[:16]. The browser hashes its own endpoint the same way to
+    # find itself in the list. User agents cannot do this: an iPad and a Mac send
+    # the same UA string, so UA matching flagged the wrong row.
+    endpoint_hash: str = ""
     is_current: bool = False
 
 
@@ -222,6 +227,7 @@ class PushSubscribeRequest(BaseModel):
     p256dh: str
     auth: str
     user_agent: str = ""
+    device_label: str = ""
 
 
 class BannerScopeRequest(BaseModel):

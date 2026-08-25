@@ -18,8 +18,8 @@ ssh user@<VPS_IP>
 ## 2. Clone the repo
 ```bash
 cd /opt
-git clone https://github.com/<your-org>/recharge-portal-v3.git rca-v3
-cd rca-v3
+git clone https://github.com/kris-recharge/recharge-portal-v3.git
+cd recharge-portal-v3
 ```
 
 ---
@@ -131,7 +131,7 @@ keypair, which is generated once and then never changed.
 docker exec rca_api_v3 python -m app.push --generate-keys
 ```
 
-Paste the three printed lines into `/opt/rca-v3/.env`, then restart:
+Paste the three printed lines into `/opt/recharge-portal-v3/.env`, then restart:
 
 ```bash
 docker compose up -d rca_api_v3
@@ -192,7 +192,7 @@ Leave the Caddyfile redirect block in place permanently (zero cost).
 
 ## Updating v3 after code changes
 ```bash
-cd /opt/rca-v3
+cd /opt/recharge-portal-v3
 git pull
 docker compose build --build-arg VITE_SUPABASE_URL=... --build-arg VITE_SUPABASE_ANON_KEY=...
 docker compose up -d

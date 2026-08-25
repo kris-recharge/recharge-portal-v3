@@ -43,7 +43,18 @@ VAPID_SUBJECT     = os.getenv("VAPID_SUBJECT", "mailto:info@rechargealaska.net")
 PUSH_ENABLED      = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)
 
 if not PUSH_ENABLED:
-    _log.info("Web Push disabled — VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set.")
+    # WARNING, not INFO, on purpose: this module is imported before main.py gets
+    # to logging.basicConfig(), and Python's fallback handler drops anything
+    # below WARNING emitted that early. As INFO this notice was silently
+    # swallowed, which made "is push configured?" impossible to answer from the
+    # container logs.
+    _log.warning(
+        "Web Push disabled — VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set. "
+        "Alerts will be delivered by email only. Generate keys with: "
+        "python -m app.push --generate-keys"
+    )
+else:
+    _log.warning("Web Push enabled (VAPID key %s…).", VAPID_PUBLIC_KEY[:12])
 
 # ── App ───────────────────────────────────────────────────────────────────────
 APP_MODE        = os.getenv("APP_MODE", "web").lower()

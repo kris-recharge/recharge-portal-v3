@@ -513,13 +513,13 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
                 <th>Start (AK)</th>
                 <th>End (AK)</th>
                 <th>EVSE</th>
-                <th>Connector #</th>
+                <th title="Connector number">Conn</th>
                 <th>Type</th>
                 <th>Max kW</th>
-                <th>Energy kWh</th>
+                <th title="Energy delivered (kWh)">kWh</th>
                 <th>Duration</th>
-                <th>SoC Start</th>
-                <th>SoC End</th>
+                <th title="State of charge at plug-in">SoC In</th>
+                <th title="State of charge at unplug">SoC Out</th>
                 <th>VID</th>
                 <th>Auth</th>
                 <th>Revenue</th>

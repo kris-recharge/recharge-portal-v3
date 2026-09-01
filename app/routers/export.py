@@ -21,7 +21,7 @@ from ..auth import CurrentUser, filter_evse_ids
 from ..config import DEV_BYPASS_AUTH
 from ..constants import connector_type_for, display_name, get_all_station_ids, location_label
 from ..db import acquire
-from .sessions import _auth_method, _resolve_soc  # shared SoC + auth classification
+from .sessions import _auth_method, _resolve_soc, _vid_tag  # shared SoC + auth/VID classification
 from .utility import ADMIN_EMAIL, UTILITY_EFFICIENCY_SQL  # v3.2: shared metered-vs-dispensed query
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -169,6 +169,30 @@ async def export_sessions(
                        AND oe.action_payload->>'idTag' LIKE 'VID:%'
                        AND oe.received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
                                               AND s.start_utc + INTERVAL '5 minutes'
+                       -- An Authorize carries no connectorId (OCPP 1.6 has no such
+                       -- field — 0 of 4087 stored Authorizes have one), so on a
+                       -- dual-connector unit the nearest probe in time can belong to
+                       -- the other side. Attribute it by charger state instead: a
+                       -- probe fires while its connector sits in Preparing, so
+                       -- require THIS connector's last status at that instant to be
+                       -- Preparing. Removed 22 borrowed VIDs across all history —
+                       -- every one fired while this connector was Unavailable,
+                       -- Available or Charging — and cost no correct ones.
+                       AND EXISTS (
+                           SELECT 1 FROM ocpp_events p
+                            WHERE p.asset_id = s.station_id
+                              AND p.action = 'StatusNotification'
+                              AND p.connector_id = s.connector_id
+                              AND p.action_payload->>'status' = 'Preparing'
+                              AND p.received_at <= oe.received_at
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM ocpp_events p2
+                                   WHERE p2.asset_id = s.station_id
+                                     AND p2.action = 'StatusNotification'
+                                     AND p2.connector_id = s.connector_id
+                                     AND p2.received_at > p.received_at
+                                     AND p2.received_at <= oe.received_at
+                                     AND p2.action_payload->>'status' <> 'Preparing'))
                      ORDER BY ABS(EXTRACT(EPOCH FROM (oe.received_at - s.start_utc))) ASC
                      LIMIT 1) AS vid_tag,
                     ep.price_per_kwh,
@@ -569,7 +593,10 @@ async def export_sessions(
             r["auth_tag"] or "",    # M — Authentication (raw tag)
             auth_method,            # N — entry mode when card-matched, else derived
             revenue,                # O — committed amount when card-matched, else est.
-            r["vid_tag"] or "",     # P — VID (VID:-prefixed only)
+            # P — VID: the StartTransaction idTag when the charger stamped one
+            # (Alpitronic skips Authorize for enrolled AutoCharge vehicles),
+            # else the nearest VID:* Authorize probe. See _vid_tag.
+            _vid_tag(r["auth_tag"] or "", r["vid_tag"]) or "",
         ])
 
     # ── Build faults rows ─────────────────────────────────────────────────────

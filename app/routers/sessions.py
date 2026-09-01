@@ -83,6 +83,33 @@ def _auth_method(start_tag: str, card_matched: bool = False) -> str:
     return "CC"
 
 
+def _vid_tag(start_tag: str, authorize_vid: str | None) -> str | None:
+    """Resolve the vehicle ID to show for a session. Shared with the export.
+
+    Two sources, most authoritative first:
+
+    1. The StartTransaction idTag, when it is VID:-prefixed. This is the
+       credential the charger actually opened the transaction with, and unlike
+       an Authorize it carries a connectorId, so it can't be borrowed from the
+       other side of a dual-connector unit.
+    2. The nearest VID:* Authorize — the AutoCharge probe. Still worth showing
+       when the probe was rejected and the driver fell back to a card or the
+       app: it names the vehicle that plugged in.
+
+    Both sources existed before v3.4 but only (2) was read, which blanked the
+    VID for any session that skipped the probe. The Alpitronic HYC400s at
+    Cooper Landing do exactly that once a vehicle's AutoCharge is enrolled:
+    they send no Authorize at all and stamp the VID straight onto
+    StartTransaction (CL-B connector 2, VID:00182335371B, 2026-08-29 and
+    2026-09-01 — Authentication read "AutoCharge" while the VID column sat
+    empty). The units still probe-then-fall-back for unenrolled vehicles, so
+    both paths stay live on the same charger.
+    """
+    if start_tag.startswith("VID:"):
+        return start_tag
+    return authorize_vid or None
+
+
 def _resolve_soc(
     raw_start:         float | None,
     raw_first_nonzero: float | None,
@@ -245,6 +272,30 @@ async def get_sessions(
                        AND o.action_payload->>'idTag' LIKE 'VID:%'
                        AND o.received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
                                              AND s.start_utc + INTERVAL '5 minutes'
+                       -- An Authorize carries no connectorId (OCPP 1.6 has no such
+                       -- field — 0 of 4087 stored Authorizes have one), so on a
+                       -- dual-connector unit the nearest probe in time can belong to
+                       -- the other side. Attribute it by charger state instead: a
+                       -- probe fires while its connector sits in Preparing, so
+                       -- require THIS connector's last status at that instant to be
+                       -- Preparing. Removed 22 borrowed VIDs across all history —
+                       -- every one fired while this connector was Unavailable,
+                       -- Available or Charging — and cost no correct ones.
+                       AND EXISTS (
+                           SELECT 1 FROM ocpp_events p
+                            WHERE p.asset_id = s.station_id
+                              AND p.action = 'StatusNotification'
+                              AND p.connector_id = s.connector_id
+                              AND p.action_payload->>'status' = 'Preparing'
+                              AND p.received_at <= o.received_at
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM ocpp_events p2
+                                   WHERE p2.asset_id = s.station_id
+                                     AND p2.action = 'StatusNotification'
+                                     AND p2.connector_id = s.connector_id
+                                     AND p2.received_at > p.received_at
+                                     AND p2.received_at <= o.received_at
+                                     AND p2.action_payload->>'status' <> 'Preparing'))
                      ORDER BY ABS(EXTRACT(EPOCH FROM (o.received_at - s.start_utc))) ASC
                      LIMIT 1) AS id_tag,
                     -- v3.3: the idTag that actually STARTED the transaction, for the
@@ -581,7 +632,7 @@ async def get_sessions(
                 energy_kwh      = energy_kwh,
                 soc_start       = soc_start_pct,
                 soc_end         = soc_end_pct,
-                id_tag          = r["id_tag"],
+                id_tag          = _vid_tag(r["auth_tag"] or "", r["id_tag"]),
                 est_revenue_usd = est_rev,
                 actual_revenue_usd = actual_rev,
                 card_entry_mode = r["card_entry_mode"],

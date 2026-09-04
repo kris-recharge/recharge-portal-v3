@@ -18,9 +18,11 @@ Routes:
 
 from __future__ import annotations
 
+import calendar
 import json
 from datetime import date, datetime, timezone
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -33,6 +35,8 @@ from ..db import acquire
 router = APIRouter(tags=["maintenance"])
 
 ADMIN_EMAIL = "kris.hall@rechargealaska.net"
+
+_AK_TZ = ZoneInfo("America/Anchorage")
 
 
 # ── Admin guard ───────────────────────────────────────────────────────────────
@@ -86,6 +90,41 @@ def _parse_jsonb(v: Any) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+def _ak_date(ts) -> date | None:
+    """The Alaska-local calendar date of a timestamptz.
+
+    asyncpg hands back tz-aware UTC datetimes, so a bare ``.date()`` is the UTC
+    day: a PM logged at 6pm Alaska lands on the *next* UTC date and would read a
+    day late everywhere. Naive datetimes are assumed to already be Alaska local.
+    """
+    if ts is None:
+        return None
+    if not isinstance(ts, datetime):
+        return ts  # already a date
+    if ts.tzinfo is None:
+        return ts.date()
+    return ts.astimezone(_AK_TZ).date()
+
+
+def _ak_today() -> date:
+    """Today in Alaska — the VPS runs UTC, which rolls over mid-afternoon here."""
+    return datetime.now(_AK_TZ).date()
+
+
+def _add_months(d: date, months: int) -> date:
+    """Add whole calendar months, clamping to the last valid day of the target month.
+
+    A PM done on 27-Jun is due again on 27-Jun, not 22-Jun: approximating a month
+    as 30 days drops ~5 days a year and the error compounds every cycle. Jan 31 +
+    1 month clamps to Feb 28/29.
+    """
+    total = (d.year * 12 + (d.month - 1)) + months
+    year, month = divmod(total, 12)
+    month += 1
+    return d.replace(year=year, month=month,
+                     day=min(d.day, calendar.monthrange(year, month)[1]))
+
+
 def _warranty_status(warranty_end: date | None, owner_name: str | None) -> dict:
     if warranty_end is None:
         if owner_name:
@@ -93,7 +132,7 @@ def _warranty_status(warranty_end: date | None, owner_name: str | None) -> dict:
                     "color": "gray", "asterisk": True}
         return {"status": "no_warranty", "label": "No Warranty", "color": "gray", "asterisk": False}
 
-    today = date.today()
+    today = _ak_today()
     days_remaining = (warranty_end - today).days
 
     if today >= warranty_end:
@@ -272,7 +311,7 @@ async def maintenance_overview(
             for r in hyperdoc_rows
         }
 
-    today = date.today()
+    today = _ak_today()
     result = []
     for c in charger_rows:
         cid = c["id"]
@@ -288,10 +327,7 @@ async def maintenance_overview(
                 return None
             if not last_ts:
                 return None  # Never had a PM — no calculated due date
-            last_date = last_ts.date() if hasattr(last_ts, "date") else last_ts
-            # Approximate months as 30 days each
-            due = date.fromordinal(last_date.toordinal() + months * 30)
-            return due.isoformat()
+            return _add_months(_ak_date(last_ts), months).isoformat()
 
         last_q  = pm_data.get("pm_quarterly")
         last_sa = pm_data.get("pm_semi_annual")
@@ -310,11 +346,17 @@ async def maintenance_overview(
         next_due_type = upcoming[0][1] if upcoming else None
         next_overdue  = (next_due_date is not None and next_due_date < today.isoformat())
 
-        # Format last PM dates
+        # Format last PM dates. These go out as Alaska-local date-only strings:
+        # the frontend's fmtDate renders with timeZone 'UTC', so handing it a raw
+        # timestamptz would print the UTC day.
         def _fmt_ts(ts):
             if ts is None:
                 return None
             return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+
+        def _fmt_pm(ts):
+            d = _ak_date(ts)
+            return d.isoformat() if d else None
 
         result.append({
             "id": cid,
@@ -339,9 +381,9 @@ async def maintenance_overview(
             "retired_at": _fmt_ts(c["retired_at"]),
             "retired_reason": c["retired_reason"],
             # PM status
-            "last_pm_quarterly":   _fmt_ts(last_q),
-            "last_pm_semi_annual": _fmt_ts(last_sa),
-            "last_pm_annual":      _fmt_ts(last_a),
+            "last_pm_quarterly":   _fmt_pm(last_q),
+            "last_pm_semi_annual": _fmt_pm(last_sa),
+            "last_pm_annual":      _fmt_pm(last_a),
             "next_pm_quarterly_due":   next_q,
             "next_pm_semi_annual_due": next_sa,
             "next_pm_annual_due":      next_a,

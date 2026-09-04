@@ -1,4 +1,4 @@
-"""Utility account & credentials management API + on-demand collection trigger.
+"""Utility account & credentials management API + usage/efficiency queries.
 
 All routes require admin access (same guard as admin.py).
 
@@ -13,13 +13,14 @@ GET    /api/utility/credentials           — list utilities with credentials (n
 PUT    /api/utility/credentials/{utility} — set/update credentials for a utility
 
 GET    /api/utility/usage                 — query collected kWh data
-POST   /api/utility/collect               — trigger an immediate collection run
+GET    /api/utility/efficiency            — daily metered-vs-dispensed per meter
+
+Collection itself runs on the Mac mini scrapers, not here — see
+collectors/scheduler.py.
 """
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from datetime import date, datetime, timezone
 from typing import Annotated, Any
 
@@ -29,8 +30,6 @@ from pydantic import BaseModel
 from ..auth import CurrentUser, PortalUser
 from ..config import DEV_BYPASS_AUTH
 from ..db import acquire
-
-logger = logging.getLogger("rca.routers.utility")
 
 router = APIRouter(prefix="/api/utility", tags=["utility"])
 
@@ -164,11 +163,6 @@ class AccountPatch(BaseModel):
 class CredentialUpsert(BaseModel):
     username: str
     password: str
-
-
-class CollectRequest(BaseModel):
-    days_back: int = 2
-    utility:   str | None = None   # if set, only collect this utility
 
 
 # ── Accounts ──────────────────────────────────────────────────────────────────
@@ -474,23 +468,3 @@ async def utility_efficiency(
         })
 
     return {"meters": list(meters.values())}
-
-
-# ── Manual collection trigger ─────────────────────────────────────────────────
-
-@router.post("/collect")
-async def trigger_collect(body: CollectRequest, _: AdminUser):
-    """Kick off an immediate collection run in the background.
-
-    Returns immediately — check account last_collected / last_error for results.
-    """
-    from ..collectors.scheduler import run_all_collectors
-
-    async def _run():
-        try:
-            await run_all_collectors(days_back=body.days_back)
-        except Exception as exc:
-            logger.error("Manual collect run failed: %s", exc, exc_info=True)
-
-    asyncio.create_task(_run())
-    return {"ok": True, "message": f"Collection started (days_back={body.days_back})"}

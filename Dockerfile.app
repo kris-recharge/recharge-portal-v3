@@ -24,7 +24,7 @@ COPY run_payter.py run_nayax_portal.py ./
 EXPOSE 8000
 
 # Single worker ON PURPOSE: the lifespan starts in-process background services
-# (alert poll thread, APScheduler utility collector, SSE broadcast queues).
+# (alert poll thread, APScheduler Payter collector, SSE broadcast queues).
 # With >1 worker each process runs its own copy -> duplicate alert emails,
 # doubled DB polling, connector-count double-counting, and SSE clients
 # connected to a worker that never fires alerts.

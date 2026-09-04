@@ -1,1 +1,1 @@
-"Utility data collectors — GVEA, CVEA (SmartHub), CEA (mymeterQ)."
+"Background collectors — Payter CCR transactions. Utility kWh is collected by the Mac mini scrapers."

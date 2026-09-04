@@ -675,12 +675,6 @@ export const upsertUtilityCredentials = (
     method: 'PUT', body: JSON.stringify(body),
   })
 
-// Manual collection trigger
-export const triggerUtilityCollect = (days_back = 2): Promise<{ ok: boolean; message: string }> =>
-  apiFetch('/api/utility/collect', {
-    method: 'POST', body: JSON.stringify({ days_back }),
-  })
-
 // ── Maintenance Tracker ────────────────────────────────────────────────────────
 
 export interface WarrantyStatus {

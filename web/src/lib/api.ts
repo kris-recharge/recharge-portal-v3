@@ -77,7 +77,15 @@ export interface ChargingSession {
   card_entry_mode: string | null
   // v3.3: how the driver authenticated. Null for failed starts (they never
   // authenticated) and for sessions with no StartTransaction on record.
-  auth_method: 'CC' | 'App' | 'AutoCharge' | null
+  // v3.5 adds 'RFID' (a driver card — these used to be reported as CC, which
+  // put money in the bucket that gets tied out against Payter/Nayax with no
+  // settlement behind it) and 'Unknown' (a credential in neither registry).
+  auth_method: 'CC' | 'App' | 'AutoCharge' | 'RFID' | 'Unknown' | null
+  // v3.5: a card settled for this session AND an app credential was presented
+  // in the ten minutes before it started without ever opening a session. Twice
+  // in August 2026 that meant the driver was billed by both the card and their
+  // LynkWell app account. Needs a human to check against LynkWell.
+  double_charge_suspect: boolean
 }
 
 export interface SessionsResponse {
@@ -85,6 +93,8 @@ export interface SessionsResponse {
   total: number
   completed_count?: number
   failed_count?: number
+  /** v3.5: rows on this page carrying double_charge_suspect. */
+  review_count?: number
   page: number
   page_size: number
   total_energy_kwh: number

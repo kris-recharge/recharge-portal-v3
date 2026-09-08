@@ -21,7 +21,12 @@ from ..auth import CurrentUser, filter_evse_ids
 from ..config import DEV_BYPASS_AUTH
 from ..constants import connector_type_for, display_name, get_all_station_ids, location_label
 from ..db import acquire
-from .sessions import _auth_method, _resolve_soc, _vid_tag  # shared SoC + auth/VID classification
+from .sessions import (  # shared SoC + auth/VID classification, shared SQL fragments
+    _auth_method,
+    _expand,
+    _resolve_soc,
+    _vid_tag,
+)
 from .utility import ADMIN_EMAIL, UTILITY_EFFICIENCY_SQL  # v3.2: shared metered-vs-dispensed query
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -80,7 +85,7 @@ async def export_sessions(
     async with acquire() as conn:
         # ── Sessions ──────────────────────────────────────────────────────────
         rows = await conn.fetch(
-            """
+            _expand("""
             WITH sessions AS (
                 SELECT
                     m.station_id,
@@ -133,6 +138,9 @@ async def export_sessions(
             with_auth AS (
                 SELECT
                     s.*,
+                    -- v3.5: true meter registers where the charger sends them —
+                    -- see SESSION_ENERGY_SOURCES_SQL in sessions.py.
+                    /*ENERGY_SOURCES*/,
                     -- Authentication: the idTag that actually STARTED the session,
                     -- from the StartTransaction CALL on the same connector. (v3.2:
                     -- was the nearest Authorize via authorize_methods, which
@@ -234,7 +242,7 @@ async def export_sessions(
                     start_utc,
                     end_utc,
                     max_power_w::numeric                AS max_power_w,
-                    energy_wh_delta::numeric            AS energy_wh_delta,
+                    /*ENERGY_COALESCE*/,
                     soc_start::numeric                  AS soc_start,
                     soc_first_nonzero::numeric          AS soc_first_nonzero,
                     soc_end::numeric                    AS soc_end,
@@ -245,7 +253,9 @@ async def export_sessions(
                     connection_fee::numeric            AS connection_fee,
                     card_amount_cents::numeric          AS card_amount_cents,
                     card_entry_mode,
-                    card_matched
+                    card_matched,
+                    -- v3.5: see DOUBLE_CHARGE_SQL in sessions.py
+                    /*DOUBLE_CHARGE*/                   AS double_charge_suspect
                 FROM with_auth
                 WHERE start_utc <= $3   -- v3.2: keep only sessions that START in range
             ),
@@ -401,7 +411,8 @@ async def export_sessions(
                     NULL::numeric                       AS connection_fee,
                     NULL::numeric                       AS card_amount_cents,
                     NULL::text                          AS card_entry_mode,
-                    FALSE                               AS card_matched
+                    FALSE                               AS card_matched,
+                    FALSE                               AS double_charge_suspect
                 FROM attempts_filtered f
             ),
             unioned AS (
@@ -411,7 +422,7 @@ async def export_sessions(
             )
             SELECT * FROM unioned
             ORDER BY start_utc DESC NULLS LAST  -- v3.2: newest start on top
-            """,
+            """),
             allowed, start_utc, end_utc,
         )
 
@@ -507,9 +518,14 @@ async def export_sessions(
         # old name is wrong now that real money lands in the same column.
         "Revenue (USD)",          # O
         "VID",                    # P
-        # Q "Actual Revenue (USD)" and R "Card Entry" were dropped in v3.3 once
-        # N and O started carrying the terminal's own values — they were exact
-        # duplicates on every matched row. Sheet is 16 columns, A–P.
+        # Q — v3.5: "Review" for a session where a card settled AND an app
+        # credential was stranded moments before it started, blank otherwise.
+        # These are the rows to check against LynkWell's invoices: twice in
+        # August 2026 the driver was billed on both. See DOUBLE_CHARGE_SQL.
+        "Double Charge?",         # Q
+        # "Actual Revenue (USD)" and "Card Entry" were dropped in v3.3 once N and
+        # O started carrying the terminal's own values — they were exact
+        # duplicates on every matched row. Sheet is 17 columns, A–Q.
     ]
 
     data_rows: list[list] = []
@@ -597,6 +613,7 @@ async def export_sessions(
             # (Alpitronic skips Authorize for enrolled AutoCharge vehicles),
             # else the nearest VID:* Authorize probe. See _vid_tag.
             _vid_tag(r["auth_tag"] or "", r["vid_tag"]) or "",
+            "Review" if r["double_charge_suspect"] else "",   # Q
         ])
 
     # ── Build faults rows ─────────────────────────────────────────────────────

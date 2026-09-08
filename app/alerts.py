@@ -583,8 +583,34 @@ def _check_suspicious_vid(conn) -> None:
                     e.received_at                                      AS stop_time,
                     (e.action_payload->>'idTag')                       AS id_tag,
                     (e.action_payload->>'transactionId')::text         AS transaction_id,
-                    ((e.action_payload->>'meterStop')::float
-                      - (e.action_payload->>'meterStart')::float) / 1000.0 AS energy_kwh
+                    -- v3.5 BUGFIX: this read meterStart off the StopTransaction
+                    -- payload, which OCPP 1.6 does not put there — 300 of 300
+                    -- sampled stops carry meterStop and transactionId only. The
+                    -- subtraction was therefore NULL on every row, the
+                    -- `energy_kwh IS NOT NULL` filter below dropped all of them,
+                    -- and this alert had never fired once since it was written.
+                    -- meterStart lives on the StartTransaction CALL, which
+                    -- carries no transactionId (that comes back in the
+                    -- CALL_RESULT, which the webhook does not forward), so it is
+                    -- matched on connector + charger-stamped timestamp the same
+                    -- way sessions.py does. The sampled window is the fallback:
+                    -- slightly short, but this is a "< 1 kWh" threshold test, so
+                    -- a few watt-hours cannot change the answer.
+                    COALESCE(
+                        ((e.action_payload->>'meterStop')::numeric - (
+                            SELECT (o.action_payload->>'meterStart')::numeric
+                            FROM ocpp_events o
+                            WHERE o.asset_id = e.asset_id
+                              AND o.action   = 'StartTransaction'
+                              AND o.received_at BETWEEN e.received_at - INTERVAL '24 hours'
+                                                    AND e.received_at
+                            ORDER BY o.received_at DESC
+                            LIMIT 1)) / 1000.0,
+                        (SELECT (MAX(mv.energy_wh) - MIN(mv.energy_wh)) / 1000.0
+                         FROM meter_values_parsed mv
+                         WHERE mv.station_id     = e.asset_id
+                           AND mv.transaction_id = (e.action_payload->>'transactionId')::bigint)
+                    )                                                  AS energy_kwh
                 FROM ocpp_events e
                 WHERE e.action = 'StopTransaction'
                   AND e.received_at >= NOW() - INTERVAL '30 minutes'
@@ -657,6 +683,134 @@ def _check_suspicious_vid(conn) -> None:
 
 
 # ── PM due-date alerts ────────────────────────────────────────────────────────
+
+def _check_double_charge(conn) -> None:
+    """Alert when a card settled for a session an app credential tried to start.
+
+    The fingerprint, confirmed twice at Glennallen in August 2026: a driver's app
+    start does not take, they tap a card, the charger opens the transaction on
+    the reader's tag — and LynkWell invoices the app account anyway, on top of
+    the $33.26 / $28.49 the card already paid. Neither driver told us; both were
+    found by hand at month-end, four weeks late.
+
+    Same three conditions as DOUBLE_CHARGE_SQL in routers/sessions.py, which is
+    what paints the badge in the Sessions tab; this is the push/email half so it
+    does not wait for someone to open the tab. Measured against the full history
+    (557 card-matched sessions, Jan-Sep 2026) it fires 7 times — under one a
+    month, and both real cases are in it.
+
+    Dedupe is on fired_alerts rather than an in-memory set: this alert is about
+    money and must survive a restart. fired_alerts is pruned at 15 days and the
+    scan window is 72 h, so the row is always still there when it matters.
+
+    The 72 h window is deliberately much wider than the poll interval. The flag
+    only becomes true once the Payter/Nayax collector has fetched the settlement
+    and matched it, which can be hours after the session ended.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            r"""
+            WITH recent AS (
+                SELECT mv.station_id, mv.connector_id, mv.transaction_id,
+                       MIN(mv.ts) AS start_utc
+                FROM meter_values_parsed mv
+                WHERE mv.transaction_id IS NOT NULL
+                  AND mv.ts >= NOW() - INTERVAL '72 hours'
+                GROUP BY 1, 2, 3
+            ),
+            carded AS (
+                SELECT r.station_id, r.connector_id, r.transaction_id, r.start_utc,
+                       ct.committed_cents, ct.entry_mode, ct.masked_pan, ct.vendor,
+                       (SELECT o.action_payload->>'idTag'
+                          FROM ocpp_events o
+                         WHERE o.asset_id = r.station_id
+                           AND o.action   = 'StartTransaction'
+                           AND (o.action_payload->>'connectorId')::int = r.connector_id
+                           AND o.received_at BETWEEN r.start_utc - INTERVAL '6 hours'
+                                                 AND r.start_utc + INTERVAL '24 hours'
+                           AND (o.action_payload->>'timestamp')::timestamptz
+                                 BETWEEN r.start_utc - INTERVAL '6 hours'
+                                     AND r.start_utc + INTERVAL '5 minutes'
+                         ORDER BY ABS(EXTRACT(EPOCH FROM (
+                             (o.action_payload->>'timestamp')::timestamptz - r.start_utc))) ASC
+                         LIMIT 1) AS auth_tag
+                FROM recent r
+                JOIN card_transactions ct
+                  ON ct.station_id     = r.station_id
+                 AND ct.connector_id  IS NOT DISTINCT FROM r.connector_id
+                 AND ct.transaction_id = r.transaction_id::text
+            )
+            SELECT c.station_id, c.connector_id, c.transaction_id, c.start_utc,
+                   c.committed_cents, c.entry_mode, c.masked_pan, c.vendor,
+                   (SELECT az.action_payload->>'idTag'
+                      FROM ocpp_events az
+                     WHERE az.asset_id = c.station_id
+                       AND az.action   = 'Authorize'
+                       AND az.received_at BETWEEN c.start_utc - INTERVAL '10 minutes'
+                                              AND c.start_utc
+                       AND az.action_payload->>'idTag' ~ '^[0-9A-Z]{20}$'
+                       AND az.action_payload->>'idTag' IS DISTINCT FROM c.auth_tag
+                       AND NOT EXISTS (
+                           SELECT 1 FROM ocpp_events sx
+                            WHERE sx.asset_id = c.station_id
+                              AND sx.action   = 'StartTransaction'
+                              AND sx.action_payload->>'idTag' = az.action_payload->>'idTag'
+                              AND sx.received_at BETWEEN c.start_utc - INTERVAL '30 minutes'
+                                                     AND c.start_utc + INTERVAL '30 minutes')
+                     ORDER BY az.received_at DESC
+                     LIMIT 1) AS stranded_tag
+            FROM carded c
+            -- strpos, not LIKE: this statement takes no parameters, so psycopg
+            -- does no %-interpolation and a '%%' would survive into the SQL
+            -- literally. Substring search sidesteps the escaping question
+            -- entirely. The trailing space keeps tx 110830 from matching
+            -- tx 1108305.
+            WHERE NOT EXISTS (
+                SELECT 1 FROM fired_alerts fa
+                 WHERE fa.alert_type = 'double_charge'
+                   AND strpos(fa.message, 'tx ' || c.transaction_id || ' ') > 0)
+            ORDER BY c.start_utc ASC
+            """
+        )
+        rows = cur.fetchall()
+
+    for (sid, conn_id, tx_id, start_utc, cents, entry_mode, pan, vendor, stranded) in rows:
+        if not stranded:
+            continue                      # no stranded app credential — ordinary card session
+        if start_utc.tzinfo is None:
+            start_utc = start_utc.replace(tzinfo=timezone.utc)
+
+        name    = display_name(sid)
+        ts      = _fmt_ak(start_utc)
+        amount  = f"${(cents or 0) / 100:.2f}"
+        msg     = (f"Card charged {amount} on tx {tx_id} — app credential "
+                   f"{stranded} was presented first and never started a session. "
+                   f"Check LynkWell for a second charge.")
+        _fire_alert(
+            conn,
+            alert_type = "double_charge",
+            asset_id   = sid,
+            evse_name  = name,
+            message    = msg,
+            subject    = f"💳 Possible double charge: {name} — {amount}",
+            body_html  = _alert_body(
+                "Possible Double Charge — Review Against LynkWell",
+                [
+                    ("Charger",           name),
+                    ("Connector",         str(conn_id) if conn_id else "—"),
+                    ("Session started",   ts),
+                    ("Transaction ID",    str(tx_id)),
+                    ("Card charged",      f"{amount} ({entry_mode or '—'}, {vendor or '—'})"),
+                    ("Card",              pan or "—"),
+                    ("Stranded app tag",  stranded),
+                    ("What to check",     "Open this session in LynkWell. If the app "
+                                          "account was also invoiced, the driver paid "
+                                          "twice and the app charge needs refunding."),
+                ],
+            ),
+            timestamp_ak = ts,
+        )
+
 
 def _fire_pm_alert(
     conn,
@@ -899,6 +1053,7 @@ def _run_poll_loop() -> None:
                 _check_offline_mid_session(conn)
                 _check_faults(conn)
                 _check_suspicious_vid(conn)
+                _check_double_charge(conn)
 
                 # Roll the connector-count odometer forward (plug-in counter).
                 accumulate_connector_counts(conn)

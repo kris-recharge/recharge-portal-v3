@@ -14,6 +14,8 @@ from ..constants import (
     connector_type_for,
     display_name,
     get_all_station_ids,
+    is_rfid_tag,
+    is_terminal_tag,
     location_label,
 )
 from ..db import acquire
@@ -53,24 +55,29 @@ def _auth_method(start_tag: str, card_matched: bool = False) -> str:
     card_transactions match     → CC (authoritative — a card was actually charged,
                                   Payter or Nayax alike)
     VID:*                       → AutoCharge (vehicle-initiated)
+    tag in TERMINAL_TAGS        → CC (a reader's fixed authorisation tag)
+    tag in RFID_TAGS            → RFID (a card issued to a driver)
     20-char A-Z/0-9 token       → App (LynkWell remote-start idTag)
-    anything else               → CC (older payment terminals present one fixed
-                                  tag, e.g. F20AA7178114D0 = Glennallen,
-                                  FE6DD7B2C3904F = ARG-Left; RFID cards land
-                                  here too)
+    anything else               → Unknown
     blank (no StartTransaction) → unknown, left blank
 
-    A terminal's fixed tag is *not* configuration anywhere in this system — it
-    is only ever read off the incoming event, so the tag alone needs no code or
-    DB change when a terminal is swapped. Recorded here purely as history:
-    ARG-Right's P68 presented 161D77C442099C from 2026-01-07 until the terminal
-    was replaced on 2026-08-10, 5875910F1313E9 until it was replaced again on
-    2026-08-20, and AAE40F780E97C9 after that. All three are 14-char hex, so
-    they all land on this branch.
+    v3.5 — the last branch used to return CC, which meant every credential this
+    code had never seen was booked as a credit card. RFID cards landed there and
+    inflated the bucket that gets tied out against Payter/Nayax settlement, with
+    no transaction behind them ($53.57 in August 2026). It now returns "Unknown",
+    which is a prompt to come look rather than a silent miscategorisation — the
+    same reasoning the card_transactions view applies to unrecognised entry
+    modes. When a reader is swapped, its new tag lands here until it is added to
+    TERMINAL_TAGS, and the Sessions tab will show it.
 
-    The tag being inert does NOT mean a swap is a no-op: the replacement carries
-    a new Payter serial, and chargers.payter_serial must be updated or the
-    matcher stops linking that charger's taps. See payter_schema.sql.
+    Terminal tags ARE configuration now, in constants.TERMINAL_TAGS — that is
+    the v3.5 change. Swapping a reader therefore needs two edits, not one: add
+    the new tag there, and update chargers.payter_serial / nayax_serial or the
+    card matcher stops linking that charger's taps (see payter_schema.sql).
+    ARG-Right has been through three readers this year — 161D77C442099C from
+    2026-01-07, 5875910F1313E9 from 2026-08-10, AAE40F780E97C9 from 2026-08-20 —
+    and the middle one has zero StartTransactions on record, so it is not in the
+    map. If it ever surfaces it will read "Unknown", which is the point.
     """
     if card_matched:
         return "CC"
@@ -78,9 +85,16 @@ def _auth_method(start_tag: str, card_matched: bool = False) -> str:
         return ""
     if start_tag.startswith("VID:"):
         return "AutoCharge"
+    if is_terminal_tag(start_tag):
+        return "CC"
+    if is_rfid_tag(start_tag):
+        return "RFID"
+    # Shape rule stays BELOW the tag look-ups: at Cooper Landing a Payter Apollo
+    # in Cloud mode mints a fresh 20-character tag per tap, shape-identical to an
+    # app token, so this branch is only safe once card_matched has had its say.
     if re.fullmatch(r"[0-9A-Z]{20}", start_tag):
         return "App"
-    return "CC"
+    return "Unknown"
 
 
 def _vid_tag(start_tag: str, authorize_vid: str | None) -> str | None:
@@ -170,6 +184,187 @@ def _resolve_soc(
     return round(start_val, 1), soc_end_pct
 
 
+# ── Shared SQL fragments (v3.5) ───────────────────────────────────────────────
+#
+# sessions.py and export.py build the same session aggregate, and the handover
+# note already flags that duplication as a hazard. These two fragments are
+# defined once and interpolated into both, so the energy basis and the
+# double-charge rule cannot drift between the table and the spreadsheet.
+
+# Where the true meter registers live, when the charger sends them.
+#
+# Sessions are aggregated from meter_values_parsed, so their energy is
+# MAX(register) - MIN(register) across the periodic samples. That window is
+# strictly INSIDE the transaction: whatever was delivered between
+# StartTransaction and the first sample, and between the last sample and
+# StopTransaction, is never counted. LynkWell bills meterStop - meterStart, so
+# we are always the lower number — 6.342 kWh and $3.14 short across 201
+# driver-authenticated sessions in August 2026, and never once over.
+#
+# Two better sources, both already in ocpp_events:
+#
+#   1. StopTransaction.transactionData, when the charger includes the energy
+#      register tagged Transaction.Begin / Transaction.End. This is the
+#      charger's own transaction record — the register pair in one message.
+#      Glennallen and both Delta units send it on 94-100% of stops (and those
+#      sites tie out); the Tritium units at ARG send only the End half; the
+#      four Autel HYC400s at Cooper Landing send neither, which is exactly
+#      where 90% of the shortfall lives. That is a StopTxnSampledData
+#      configuration key on those units, not a code problem — once LynkWell
+#      adds Energy.Active.Import.Register to it, branch 1 covers the fleet.
+#
+#   2. StopTransaction.meterStop paired with StartTransaction.meterStart.
+#      NOTE meterStart is NOT in the StopTransaction payload — 300 of 300
+#      sampled stops carry meterStop and transactionId only. (app/alerts.py
+#      assumed otherwise and has been subtracting NULL, which is why the
+#      suspicious-VID alert has never fired; fixed there too.) So meterStart has
+#      to be read off the StartTransaction CALL, matched on connector and the
+#      charger-stamped payload timestamp — the same join with_auth already does
+#      for auth_tag, because a StartTransaction CALL carries no transactionId
+#      (that arrives in the CALL_RESULT, which the webhook does not forward).
+SESSION_ENERGY_SOURCES_SQL = """
+                    (SELECT (sv->>'value')::numeric
+                       FROM ocpp_events st
+                       CROSS JOIN LATERAL jsonb_array_elements(
+                            st.action_payload->'transactionData') td
+                       CROSS JOIN LATERAL jsonb_array_elements(td->'sampledValue') sv
+                      WHERE st.asset_id       = s.station_id
+                        AND st.action         = 'StopTransaction'
+                        AND st.transaction_id = s.transaction_id
+                        AND sv->>'measurand'  = 'Energy.Active.Import.Register'
+                        AND sv->>'context'    = 'Transaction.Begin'
+                        AND sv->>'unit'       = 'Wh'
+                      LIMIT 1)                                  AS reg_begin_wh,
+                    (SELECT (sv->>'value')::numeric
+                       FROM ocpp_events st
+                       CROSS JOIN LATERAL jsonb_array_elements(
+                            st.action_payload->'transactionData') td
+                       CROSS JOIN LATERAL jsonb_array_elements(td->'sampledValue') sv
+                      WHERE st.asset_id       = s.station_id
+                        AND st.action         = 'StopTransaction'
+                        AND st.transaction_id = s.transaction_id
+                        AND sv->>'measurand'  = 'Energy.Active.Import.Register'
+                        AND sv->>'context'    = 'Transaction.End'
+                        AND sv->>'unit'       = 'Wh'
+                      LIMIT 1)                                  AS reg_end_wh,
+                    (SELECT (st.action_payload->>'meterStop')::numeric
+                       FROM ocpp_events st
+                      WHERE st.asset_id       = s.station_id
+                        AND st.action         = 'StopTransaction'
+                        AND st.transaction_id = s.transaction_id
+                      LIMIT 1)                                  AS meter_stop_wh,
+                    (SELECT (o.action_payload->>'meterStart')::numeric
+                       FROM ocpp_events o
+                      WHERE o.asset_id = s.station_id
+                        AND o.action   = 'StartTransaction'
+                        AND (o.action_payload->>'connectorId')::int = s.connector_id
+                        AND o.received_at BETWEEN s.start_utc - INTERVAL '6 hours'
+                                              AND s.start_utc + INTERVAL '24 hours'
+                        AND (o.action_payload->>'timestamp')::timestamptz
+                              BETWEEN s.start_utc - INTERVAL '6 hours'
+                                  AND s.start_utc + INTERVAL '5 minutes'
+                      ORDER BY ABS(EXTRACT(EPOCH FROM (
+                          (o.action_payload->>'timestamp')::timestamptz - s.start_utc))) ASC
+                      LIMIT 1)                                  AS meter_start_wh
+"""
+
+# Pick the best available basis. Both candidates are sanity-bounded against the
+# MeterValues figure rather than trusted outright:
+#
+#   >= mv - 100 Wh — clipping can only LOSE energy, so a candidate materially
+#              below the sampled window means the wrong event was matched. The
+#              100 Wh floor is slack for representation, not for error:
+#              meterStart/meterStop are integers while meter_values_parsed.
+#              energy_wh is numeric with a decimal, so the two disagree by a
+#              watt-hour on perfectly good data. Requiring a strict >= threw the
+#              authoritative register away on 1,161 of 2,104 sessions, nearly all
+#              of them off by exactly -1 Wh.
+#   <= mv + 10 kWh — bounds the excess by what a charger can physically deliver
+#              in the missing head+tail. At 200 kW (the fastest unit on the
+#              estate) that is three minutes of sampling gap; anything larger is
+#              a mis-joined StartTransaction from an adjacent session, a real
+#              risk on a dual-connector unit replaying buffered events. Two
+#              sessions on 2026-01-07 — the first day of collection, when the
+#              sampled window itself was incomplete — trip this and keep the
+#              MeterValues figure.
+#
+# A candidate outside the band is discarded and the next source tried, so the
+# worst case is today's behaviour rather than a wrong number.
+SESSION_ENERGY_COALESCE_SQL = """
+                    CASE
+                      WHEN reg_begin_wh IS NOT NULL AND reg_end_wh IS NOT NULL
+                       AND reg_end_wh - reg_begin_wh >= energy_wh_delta - 100
+                       AND reg_end_wh - reg_begin_wh <= energy_wh_delta + 10000
+                        THEN GREATEST(reg_end_wh - reg_begin_wh, 0)
+                      WHEN meter_start_wh IS NOT NULL AND meter_stop_wh IS NOT NULL
+                       AND meter_stop_wh - meter_start_wh >= energy_wh_delta - 100
+                       AND meter_stop_wh - meter_start_wh <= energy_wh_delta + 10000
+                        THEN GREATEST(meter_stop_wh - meter_start_wh, 0)
+                      ELSE energy_wh_delta
+                    END::numeric                        AS energy_wh_delta
+"""
+
+# A card paid for this session, but an app credential was presented moments
+# before and never started anything. That is the fingerprint of a driver whose
+# app start did not take, who then tapped a card — and LynkWell has twice billed
+# the app account anyway, on top of the card. Two confirmed in August 2026:
+# Glennallen 11 Aug ($33.26 card + $33.25 invoiced) and 12 Aug ($28.49 + $28.48).
+#
+# Three conditions, each one earning its place against the full history
+# (557 card-matched sessions, January-September 2026):
+#
+#   card_matched          — a settled Payter/Nayax transaction, so money moved.
+#   app-shaped Authorize  — 20 chars of A-Z0-9 within 10 minutes before the
+#                           start. Every confirmed case sat 35-542 s ahead.
+#   not this session's own tag, and never consumed
+#                         — without the "consumed" test the rule also fires on a
+#                           driver who ran an app session, ended it, and then
+#                           started a second session on a card. Requiring that
+#                           the app tag started NO transaction on that charger
+#                           within +/- 30 min removes exactly those and keeps
+#                           every real one: 9 flags become 7 over nine months.
+#
+# It cannot catch everything. The 11 Aug session produced no Authorize at all on
+# our feed — the charger had just rebooted and LynkWell's RemoteStartTransaction
+# is CSMS->charger, a direction the webhook does not forward (0 of 168,784
+# events). Until that direction arrives, roughly half of these are invisible.
+DOUBLE_CHARGE_SQL = """
+                    (card_matched AND EXISTS (
+                        SELECT 1 FROM ocpp_events az
+                         WHERE az.asset_id = with_auth.station_id
+                           AND az.action   = 'Authorize'
+                           AND az.received_at BETWEEN with_auth.start_utc - INTERVAL '10 minutes'
+                                                  AND with_auth.start_utc
+                           AND az.action_payload->>'idTag' ~ '^[0-9A-Z]{20}$'
+                           AND az.action_payload->>'idTag' IS DISTINCT FROM with_auth.auth_tag
+                           AND NOT EXISTS (
+                               SELECT 1 FROM ocpp_events sx
+                                WHERE sx.asset_id = with_auth.station_id
+                                  AND sx.action   = 'StartTransaction'
+                                  AND sx.action_payload->>'idTag'
+                                        = az.action_payload->>'idTag'
+                                  AND sx.received_at
+                                        BETWEEN with_auth.start_utc - INTERVAL '30 minutes'
+                                            AND with_auth.start_utc + INTERVAL '30 minutes')))
+"""
+
+
+def _expand(sql: str) -> str:
+    """Splice the shared fragments into a query.
+
+    Token replacement rather than an f-string on purpose: DOUBLE_CHARGE_SQL
+    contains a POSIX regex with a `{20}` quantifier, and an f-string would try to
+    read that as a field. The tokens are SQL comments, so an un-expanded query
+    still parses — it just wouldn't have the columns, which fails loudly at the
+    first fetch instead of silently returning wrong numbers.
+    """
+    return (
+        sql.replace("/*ENERGY_SOURCES*/",  SESSION_ENERGY_SOURCES_SQL)
+           .replace("/*ENERGY_COALESCE*/", SESSION_ENERGY_COALESCE_SQL)
+           .replace("/*DOUBLE_CHARGE*/",   DOUBLE_CHARGE_SQL)
+    )
+
+
 def _parse_dt_param(val: str, *, end: bool = False) -> datetime:
     """Accept YYYY-MM-DD (AK midnight boundary) **or** a full ISO-8601 datetime.
 
@@ -215,7 +410,7 @@ async def get_sessions(
         # Build session aggregates from meter_values_parsed
         # One row per (station_id, connector_id, transaction_id)
         rows = await conn.fetch(
-            """
+            _expand("""
             WITH sessions AS (
                 SELECT
                     m.station_id,
@@ -266,6 +461,9 @@ async def get_sessions(
             with_auth AS (
                 SELECT
                     s.*,
+                    -- v3.5: the true meter registers, when the charger sends them.
+                    -- See SESSION_ENERGY_SOURCES_SQL for why and which units do.
+                    /*ENERGY_SOURCES*/,
                     (SELECT o.action_payload->>'idTag' FROM ocpp_events o
                      WHERE o.asset_id = s.station_id
                        AND o.action = 'Authorize'
@@ -357,7 +555,7 @@ async def get_sessions(
                     start_utc,
                     end_utc,
                     max_power_w::numeric                AS max_power_w,
-                    energy_wh_delta::numeric            AS energy_wh_delta,
+                    /*ENERGY_COALESCE*/,
                     soc_start::numeric                  AS soc_start,
                     soc_first_nonzero::numeric          AS soc_first_nonzero,
                     soc_end::numeric                    AS soc_end,
@@ -368,7 +566,10 @@ async def get_sessions(
                     connection_fee::numeric             AS connection_fee,
                     card_amount_cents::numeric          AS card_amount_cents,
                     card_entry_mode,
-                    card_matched
+                    card_matched,
+                    -- v3.5: a card paid, but an app credential was stranded
+                    -- moments earlier. See DOUBLE_CHARGE_SQL.
+                    /*DOUBLE_CHARGE*/                   AS double_charge_suspect
                 FROM with_auth
                 WHERE ($3::timestamptz IS NULL OR start_utc <= $3)  -- v3.2: START in range
             ),
@@ -539,7 +740,8 @@ async def get_sessions(
                     NULL::numeric                       AS connection_fee,
                     NULL::numeric                       AS card_amount_cents,
                     NULL::text                          AS card_entry_mode,
-                    FALSE                               AS card_matched
+                    FALSE                               AS card_matched,
+                    FALSE                               AS double_charge_suspect
                 FROM attempts_filtered f
             ),
             unioned AS (
@@ -568,7 +770,7 @@ async def get_sessions(
             FROM unioned
             ORDER BY start_utc DESC NULLS LAST                  -- v3.2: newest start on top
             LIMIT $4 OFFSET $5
-            """,
+            """),
             allowed,
             start_utc,
             end_utc,
@@ -579,6 +781,7 @@ async def get_sessions(
     total           = int(rows[0]["total_count"])                     if rows else 0
     completed_count = int(rows[0]["completed_count"])                 if rows else 0
     failed_count    = total - completed_count
+    review_count    = sum(1 for r in rows if r["double_charge_suspect"])
     total_energy  = float(rows[0]["agg_energy_wh"] or 0) / 1000.0    if rows else 0.0
     total_revenue = float(rows[0]["agg_revenue"]   or 0)              if rows else 0.0
     avg_dur_raw   = rows[0]["agg_avg_duration_min"]                    if rows else None
@@ -637,6 +840,7 @@ async def get_sessions(
                 actual_revenue_usd = actual_rev,
                 card_entry_mode = r["card_entry_mode"],
                 auth_method     = auth_method,
+                double_charge_suspect = bool(r["double_charge_suspect"]),
             )
         )
 
@@ -645,6 +849,7 @@ async def get_sessions(
         total=total,
         completed_count=completed_count,
         failed_count=failed_count,
+        review_count=review_count,
         page=page,
         page_size=page_size,
         total_energy_kwh=round(total_energy, 3),

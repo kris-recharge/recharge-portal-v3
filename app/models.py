@@ -36,7 +36,15 @@ class ChargingSession(BaseModel):
     # v3.3: how the driver authenticated — "CC" | "App" | "AutoCharge", or None
     # when no StartTransaction was found (and always None for failed starts,
     # which never authenticated at all). Derived by sessions._auth_method.
+    # v3.5 adds "RFID" (a driver card, previously mislabelled CC) and "Unknown"
+    # (a credential in none of the registries — a prompt to go look, not a guess).
     auth_method: str | None = None
+    # v3.5: a card settled for this session AND an app credential was presented
+    # in the ten minutes before it started without ever opening a transaction.
+    # That is how both August 2026 double charges looked: the driver's app start
+    # didn't take, they tapped a card, and LynkWell invoiced the app account on
+    # top of the card. Needs a human to compare against LynkWell's invoice.
+    double_charge_suspect: bool = False
 
 
 class SessionsResponse(BaseModel):
@@ -44,6 +52,9 @@ class SessionsResponse(BaseModel):
     total: int                       # all rows (completed + failed attempts)
     completed_count: int = 0         # rows with a real transaction
     failed_count: int = 0            # Preparing-but-never-Charging attempts
+    # v3.5: how many rows on THIS page carry double_charge_suspect, so the tab
+    # can surface a review prompt without the client re-scanning the list.
+    review_count: int = 0
     page: int
     page_size: int
     total_energy_kwh: float = 0.0
@@ -188,7 +199,7 @@ class ExportRequest(BaseModel):
 # ── Alerts Config & History ───────────────────────────────────────────────────
 
 ALERT_TYPES = ("offline_idle", "offline_mid_session", "fault", "suspicious_vid",
-               "pm_due_14d", "pm_overdue")
+               "double_charge", "pm_due_14d", "pm_overdue")
 
 class AlertSubscription(BaseModel):
     alert_type: str   # one of ALERT_TYPES

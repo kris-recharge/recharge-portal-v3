@@ -20,10 +20,12 @@ import { X, Zap, Clock, Battery, TrendingUp, KeyRound } from 'lucide-react'
 import { ChargingSession, fetchSessionDetail, MeterValuePoint } from '../lib/api'
 
 /** Operator-facing wording for the API's auth_method values. */
-const AUTH_METHOD_LABEL: Record<'CC' | 'App' | 'AutoCharge', string> = {
+const AUTH_METHOD_LABEL: Record<NonNullable<ChargingSession['auth_method']>, string> = {
   CC: 'Credit card',
   App: 'Mobile app',
   AutoCharge: 'AutoCharge',
+  RFID: 'RFID card',
+  Unknown: 'Unrecognised credential',
 }
 
 interface Props {
@@ -183,6 +185,15 @@ export function SessionDetailModal({ session: s, onClose }: Props) {
           )}
           {s.auth_method != null && (
             <Stat icon={<KeyRound size={14} />} label="Authentication" value={AUTH_METHOD_LABEL[s.auth_method]} />
+          )}
+          {/* v3.5: surfaced here as well as in the table, because this modal is
+              where the session gets opened to be compared against LynkWell. */}
+          {s.double_charge_suspect && (
+            <Stat
+              icon={<span className="text-xs font-bold">⚠</span>}
+              label="Possible double charge"
+              value="Check LynkWell"
+            />
           )}
         </div>
 

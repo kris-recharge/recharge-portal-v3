@@ -14,7 +14,7 @@ import { SessionDetailModal } from '../components/SessionDetailModal'
 import { DailyTotalsCharts } from '../components/DailyTotalsCharts'
 import { SessionDensityHeatmap } from '../components/SessionDensityHeatmap'
 import { EvseFilterGroups } from '../components/EvseFilterGroups'
-import { Zap, Clock, DollarSign, Activity, Filter, X, Radio, Gauge, TrendingUp } from 'lucide-react'
+import { Zap, Clock, DollarSign, Activity, Filter, X, Radio, Gauge, TrendingUp, AlertTriangle } from 'lucide-react'
 
 const PAGE_SIZE = 100
 const LIVE_HOURS = 168          // rolling window length
@@ -22,24 +22,32 @@ const LIVE_REFRESH_MS = 60_000  // auto-refresh interval (60 s)
 
 // ── Authentication method presentation ────────────────────────────────────────
 // v3.3: how the driver started the session, from the API's auth_method.
-type AuthMethod = 'CC' | 'App' | 'AutoCharge'
+type AuthMethod = 'CC' | 'App' | 'AutoCharge' | 'RFID' | 'Unknown'
 
 const AUTH_METHOD_LABEL: Record<AuthMethod, string> = {
   CC:         'Card',
   App:        'App',
   AutoCharge: 'AutoCharge',
+  RFID:       'RFID',
+  Unknown:    'Unknown',
 }
 
 const AUTH_METHOD_STYLE: Record<AuthMethod, string> = {
   CC:         'bg-emerald-100 text-emerald-700',
   App:        'bg-blue-100 text-blue-700',
   AutoCharge: 'bg-violet-100 text-violet-700',
+  RFID:       'bg-cyan-100 text-cyan-700',
+  Unknown:    'bg-amber-100 text-amber-800',
 }
 
 const AUTH_METHOD_TITLE: Record<AuthMethod, string> = {
-  CC:         'Credit card at the unit’s payment terminal (or an RFID card)',
+  CC:         'Credit card at the unit’s payment terminal',
   App:        'Remote start from the LynkWell mobile app',
   AutoCharge: 'Vehicle-initiated — the car’s ID was recognised on plug-in',
+  RFID:       'RFID card issued to a driver — bills to their account, not to a card',
+  Unknown:    'Credential not recognised. If a card reader was swapped, add its new '
+            + 'authorisation tag to TERMINAL_TAGS; otherwise this may be a card from '
+            + 'another network.',
 }
 
 // ── AK-timezone date helpers ───────────────────────────────────────────────────
@@ -229,6 +237,9 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
   const totalRevenue = data?.total_revenue_usd ?? 0
   const avgDuration  = data?.avg_duration_min  ?? null
   const avgDispensed = completed > 0 ? totalEnergy / completed : null
+  // v3.5: possible double charges on this page. Server-computed so the banner
+  // is right even when the page is still rendering.
+  const reviewCount  = data?.review_count ?? 0
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -390,6 +401,34 @@ export function SessionsTab({ onFiltersApplied }: SessionsTabProps) {
           ) : null}
         </div>
       </div>
+
+      {/* ── Possible double charges ─────────────────────────────────────────
+          v3.5: a card settled AND an app credential was stranded moments
+          earlier. Two confirmed cases at Glennallen in August 2026 sat unnoticed
+          for four weeks until month-end, so this deliberately sits ABOVE the KPI
+          row rather than reading as one more statistic. It only renders when
+          there is something to act on. */}
+      {reviewCount > 0 && (
+        <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-red-600" />
+          <div className="text-sm text-red-900">
+            <div className="font-semibold">
+              {reviewCount === 1
+                ? '1 session may have been charged twice'
+                : `${reviewCount} sessions may have been charged twice`}
+            </div>
+            <div className="mt-0.5 text-red-800">
+              A card paid for {reviewCount === 1 ? 'this session' : 'these sessions'}, but an app
+              credential was presented just before and never started one. Open{' '}
+              {reviewCount === 1 ? 'the row' : 'each row'} marked{' '}
+              <span className="px-1 py-0.5 rounded bg-red-100 text-red-700 text-xs font-medium">
+                Review
+              </span>{' '}
+              in LynkWell — if the app account was invoiced as well, the driver needs a refund.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── KPI row ─────────────────────────────────────────────────────────── */}
       {isLoading ? (
@@ -644,16 +683,33 @@ function SessionRow({
         {s.id_tag?.startsWith('VID:') ? s.id_tag : ''}
       </td>
       <td>
-        {s.auth_method ? (
-          <span
-            className={`px-1.5 py-0.5 rounded text-xs whitespace-nowrap ${AUTH_METHOD_STYLE[s.auth_method]}`}
-            title={AUTH_METHOD_TITLE[s.auth_method]}
-          >
-            {AUTH_METHOD_LABEL[s.auth_method]}
-          </span>
-        ) : (
-          <span className="text-gray-400">—</span>
-        )}
+        <div className="flex items-center gap-1">
+          {s.auth_method ? (
+            <span
+              className={`px-1.5 py-0.5 rounded text-xs whitespace-nowrap ${AUTH_METHOD_STYLE[s.auth_method]}`}
+              title={AUTH_METHOD_TITLE[s.auth_method]}
+            >
+              {AUTH_METHOD_LABEL[s.auth_method]}
+            </span>
+          ) : (
+            <span className="text-gray-400">—</span>
+          )}
+          {/* v3.5: a card settled here, but an app credential was presented in
+              the ten minutes before and never started anything. Twice in August
+              2026 that meant LynkWell billed the app account on top of the
+              card. Sits next to the auth chip because it is a statement about
+              how the session was paid for. */}
+          {s.double_charge_suspect && (
+            <span
+              className="px-1.5 py-0.5 rounded text-xs whitespace-nowrap bg-red-100 text-red-700 font-medium"
+              title={'A card paid for this session, but an app credential was presented just '
+                   + 'before it and never started one. Open the session in LynkWell: if the '
+                   + 'app account was also invoiced, the driver paid twice.'}
+            >
+              Review
+            </span>
+          )}
+        </div>
       </td>
       <td className="tabular-nums text-emerald-700 font-medium">
         {/* v3.3: terminal-committed amount when the session was card-initiated

@@ -148,3 +148,69 @@ def connector_type_for(station_id: str, connector_id: int, session_start_utc=Non
             pass
 
     return ctype
+
+
+# ── Credential tag registry (v3.5) ────────────────────────────────────────────
+#
+# _auth_method() used to classify an idTag purely by shape, and its last branch
+# was "anything I don't recognise is a credit card". That silently swallowed
+# every RFID card into the CC bucket — 5 sessions and $53.57 in August 2026
+# alone, money with no Payter/Nayax settlement behind it, which is exactly the
+# figure that breaks a month-end tie-out against the processor statements.
+#
+# The two maps below replace that guess with a fact. Both are keyed on the
+# UPPERCASE tag; look-ups normalise, because the same physical card arrives
+# lower-cased from some firmware.
+
+# Fixed authorisation tags belonging to a card reader (CCR), one per charger.
+# These are read off the terminal itself — LynkWell shows them on the charger's
+# Payment Terminal panel as "Authorization ID Tag" — and they change when a
+# reader is swapped, so this map needs maintaining. ARG-Right has already been
+# through three this year.
+#
+# NOT a complete list of card readers: the Payter Apollo CCRs at Cooper Landing
+# (CL-A..D) run "Cloud" integration and mint a FRESH 20-character tag per tap,
+# so no static tag exists for them and none can be listed here. Those sessions
+# are identified by their settled Payter transaction instead — see the
+# card_matched branch in _auth_method, which outranks every rule below.
+TERMINAL_TAGS: dict[str, str] = {
+    "FE6DD7B2C3904F": "ARG - Left",
+    "161D77C442099C": "ARG - Right",      # retired 2026-08-10
+    "AAE40F780E97C9": "ARG - Right",      # in service from 2026-08-20
+    "F20AA7178114D0": "Glennallen",
+    "253F4A3DBECB6C": "Delta - Right",
+    "33A95058916CEF": "Delta - Left",
+    "9DFA7CE9F392C8": "Delta - Left",     # retired, last seen 2026-01-07
+}
+
+# RFID cards issued to drivers. A tag here bills to a driver account, not to a
+# card terminal, so it must never land in the CC bucket.
+#
+# How to spot a new one: a terminal tag is fixed to a single charger, so any
+# non-VID, non-app-shaped tag seen starting transactions on MORE THAN ONE
+# charger cannot be a reader. 0424689D4F6180 was found exactly that way — it
+# appears on CL-B, CL-C and CL-D.
+RFID_TAGS: dict[str, str] = {
+    "0424689D4F6180": "Driver RFID card",
+}
+
+# Deliberately absent: 04AE179C4F6181. It ran twice at CL-D on 2026-06-28 and is
+# registered to no driver in LynkWell; both transactions ended reason
+# "DeAuthorized" — the charger was offline, authorised it locally, and LynkWell
+# cut it off on reconnect after 23.6 kWh had already been delivered. Almost
+# certainly a card from another network. It classifies as "Unknown", which is
+# the correct outcome: it is neither a reader nor one of ours.
+
+
+def _norm_tag(tag: str) -> str:
+    return (tag or "").strip().upper()
+
+
+def is_terminal_tag(tag: str) -> bool:
+    """True when the tag is a card reader's fixed authorisation tag."""
+    return _norm_tag(tag) in TERMINAL_TAGS
+
+
+def is_rfid_tag(tag: str) -> bool:
+    """True when the tag is an RFID card issued to a driver."""
+    return _norm_tag(tag) in RFID_TAGS

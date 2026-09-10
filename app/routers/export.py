@@ -271,6 +271,8 @@ async def export_sessions(
             -- fault (Tritium vendor code 824, Alpitronic 23) counts even when the
             -- only Authorize was a rejected AutoCharge VID — a real driver plugged
             -- in and never got authorized.
+            -- EXCEPTION 2 (v3.6): an episode where the charger opened a transaction
+            -- that then metered nothing. See ZERO_ENERGY_TX_SQL in sessions.py.
             sn AS (
                 SELECT
                     asset_id,
@@ -286,12 +288,14 @@ async def export_sessions(
                   AND action_payload->>'status' IS NOT NULL
             ),
             charge_sig AS (   -- any signal that a transaction actually began
-                SELECT asset_id, connector_id, received_at
-                FROM ocpp_events
-                WHERE asset_id = ANY($1::text[])
-                  AND ( (action = 'StatusNotification'
-                         AND action_payload->>'status' = 'Charging')
-                        OR action = 'StartTransaction' )
+                                -- AND delivered something (see ZERO_ENERGY_TX_SQL)
+                SELECT e.asset_id, e.connector_id, e.received_at
+                FROM ocpp_events e
+                WHERE e.asset_id = ANY($1::text[])
+                  AND ( (e.action = 'StatusNotification'
+                         AND e.action_payload->>'status' = 'Charging')
+                        OR ( e.action = 'StartTransaction'
+                             AND NOT EXISTS (/*ZERO_ENERGY_TX*/) ) )
             ),
             avail AS (        -- connector cleared / unplugged
                 SELECT asset_id, connector_id, received_at
@@ -375,6 +379,18 @@ async def export_sessions(
                                                           AND a.episode_end
                             )
                         )
+                        OR EXISTS (   -- (2d) v3.6: the charger opened a transaction
+                                      -- during this episode and (per condition 1,
+                                      -- with charge_sig's zero-energy guard) it
+                                      -- metered nothing — stands alone. Covers the
+                                      -- Alpitronic V2G/EVCommunicationError family,
+                                      -- which never raises status 'Faulted'.
+                            SELECT 1 FROM ocpp_events sx
+                            WHERE sx.asset_id = a.station_id
+                              AND sx.action = 'StartTransaction'
+                              AND sx.connector_id IS NOT DISTINCT FROM a.connector_id
+                              AND sx.received_at BETWEEN a.attempt_at AND a.episode_end
+                        )
                     )
             ),
             failed_rows AS (
@@ -394,19 +410,41 @@ async def export_sessions(
                     NULL::numeric                       AS soc_last_nonzero,
                     -- Surface the credential that failed (e.g. the rejected
                     -- AutoCharge VID) so repeat offenders are visible in the export.
-                    (SELECT az.action_payload->>'idTag' FROM ocpp_events az
-                     WHERE az.asset_id = f.station_id
-                       AND az.action = 'Authorize'
-                       AND az.received_at BETWEEN f.attempt_at - INTERVAL '30 seconds'
-                                              AND f.episode_end
-                     ORDER BY az.received_at ASC LIMIT 1) AS auth_tag,
-                    (SELECT az.action_payload->>'idTag' FROM ocpp_events az
-                     WHERE az.asset_id = f.station_id
-                       AND az.action = 'Authorize'
-                       AND az.action_payload->>'idTag' LIKE 'VID:%'
-                       AND az.received_at BETWEEN f.attempt_at - INTERVAL '30 seconds'
-                                              AND f.episode_end
-                     ORDER BY az.received_at ASC LIMIT 1) AS vid_tag,
+                    -- v3.6: fall back to the StartTransaction idTag. An Alpitronic
+                    -- with AutoCharge enrolled sends no Authorize at all and stamps
+                    -- the VID straight onto StartTransaction (see _vid_tag in
+                    -- sessions.py), so a (2d) zero-energy attempt would otherwise
+                    -- name no credential.
+                    COALESCE(
+                        (SELECT az.action_payload->>'idTag' FROM ocpp_events az
+                          WHERE az.asset_id = f.station_id
+                            AND az.action = 'Authorize'
+                            AND az.received_at BETWEEN f.attempt_at - INTERVAL '30 seconds'
+                                                   AND f.episode_end
+                          ORDER BY az.received_at ASC LIMIT 1),
+                        (SELECT sx.action_payload->>'idTag' FROM ocpp_events sx
+                          WHERE sx.asset_id = f.station_id
+                            AND sx.action = 'StartTransaction'
+                            AND sx.connector_id IS NOT DISTINCT FROM f.connector_id
+                            AND sx.received_at BETWEEN f.attempt_at AND f.episode_end
+                          ORDER BY sx.received_at ASC LIMIT 1)
+                    )                                     AS auth_tag,
+                    COALESCE(
+                        (SELECT az.action_payload->>'idTag' FROM ocpp_events az
+                          WHERE az.asset_id = f.station_id
+                            AND az.action = 'Authorize'
+                            AND az.action_payload->>'idTag' LIKE 'VID:%'
+                            AND az.received_at BETWEEN f.attempt_at - INTERVAL '30 seconds'
+                                                   AND f.episode_end
+                          ORDER BY az.received_at ASC LIMIT 1),
+                        (SELECT sx.action_payload->>'idTag' FROM ocpp_events sx
+                          WHERE sx.asset_id = f.station_id
+                            AND sx.action = 'StartTransaction'
+                            AND sx.action_payload->>'idTag' LIKE 'VID:%'
+                            AND sx.connector_id IS NOT DISTINCT FROM f.connector_id
+                            AND sx.received_at BETWEEN f.attempt_at AND f.episode_end
+                          ORDER BY sx.received_at ASC LIMIT 1)
+                    )                                     AS vid_tag,
                     NULL::numeric                       AS price_per_kwh,
                     NULL::numeric                       AS connection_fee,
                     NULL::numeric                       AS card_amount_cents,
@@ -497,7 +535,8 @@ async def export_sessions(
 
     # ── Build sessions rows ───────────────────────────────────────────────────
     session_columns = [
-        "Status",                 # A — Completed | Auth Timed Out (v3.2)
+        "Status",                 # A — Completed | Failed Start (v3.6; was
+                                  #     "Auth Timed Out" in v3.2-v3.5)
         "Start Date/Time (AK)",   # B
         "End Date/Time (AK)",     # C
         "EVSE",                   # D
@@ -535,9 +574,12 @@ async def export_sessions(
         start_dt   = r["start_utc"]
         end_dt     = r["end_utc"]
         is_failed  = r["kind"] == "failed"
-        # Failed-start attempts carry no transaction → no energy/SoC/revenue.
+        # Failed-start attempts deliver no energy → no energy/SoC/revenue.
         # Match the on-screen badge so export counts reconcile with the table.
-        status     = "Auth Timed Out" if is_failed else "Completed"
+        # v3.6: was "Auth Timed Out", which only ever described branch (2b).
+        # Branch (2d) admits transactions that authorised fine and then failed
+        # the V2G handshake, so the label has to cover the whole family.
+        status     = "Failed Start" if is_failed else "Completed"
         dur_min    = (
             round((end_dt - start_dt).total_seconds() / 60.0, 2)
             if start_dt and end_dt else ""

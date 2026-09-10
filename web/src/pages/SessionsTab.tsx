@@ -649,7 +649,7 @@ function SessionRow({
       onClick={failed ? undefined : onSelect}
       className={failed ? 'bg-amber-50/60' : 'cursor-pointer'}
       title={failed
-        ? 'Driver plugged in but charging never started (no transaction) — a card/app credential stalled, or the charger timed out waiting for authorization (e.g. a rejected AutoCharge vehicle; its VID shows in the ID tag column). Casual plug/unplugs are excluded.'
+        ? 'Driver plugged in but no energy was delivered — a card/app credential stalled, the charger timed out waiting for authorization, it faulted before charging, or it opened a transaction that metered nothing (e.g. a failed V2G handshake). The credential used shows in the ID tag column. Casual plug/unplugs are excluded.'
         : 'Click to view session detail chart'}
     >
       <td className="font-mono text-xs">
@@ -658,7 +658,7 @@ function SessionRow({
           // a plain timestamp — keeps the Start column the same width as End.
           <div className="flex flex-col items-start gap-1">
             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 uppercase tracking-wide whitespace-nowrap">
-              Auth timed out
+              Failed start
             </span>
             <span>{s.start_dt}</span>
           </div>

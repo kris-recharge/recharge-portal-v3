@@ -34,8 +34,11 @@ class ChargingSession(BaseModel):
     actual_revenue_usd: float | None = None
     card_entry_mode: str | None = None
     # v3.3: how the driver authenticated — "CC" | "App" | "AutoCharge", or None
-    # when no StartTransaction was found (and always None for failed starts,
-    # which never authenticated at all). Derived by sessions._auth_method.
+    # when no StartTransaction was found (and always None for failed starts).
+    # Derived by sessions._auth_method.
+    # v3.6: a failed start is no longer necessarily un-authenticated — a
+    # zero-energy transaction authorised fine and then delivered nothing — but
+    # the column stays blank for them either way; see sessions.get_sessions.
     # v3.5 adds "RFID" (a driver card, previously mislabelled CC) and "Unknown"
     # (a credential in none of the registries — a prompt to go look, not a guess).
     auth_method: str | None = None

@@ -349,6 +349,48 @@ DOUBLE_CHARGE_SQL = """
 """
 
 
+# v3.6 — "the charger opened a transaction that delivered nothing".
+#
+# Correlated against a StartTransaction CALL aliased `e`; true when that
+# transaction is provably zero-energy. Used to stop such a StartTransaction from
+# counting as proof that charging began (charge_sig), which is what hid six CL-C
+# and CL-D attempts on 2026-09-09: the driver plugged in, the HYC400 accepted the
+# AutoCharge VID and opened a transaction, the V2G handshake failed, and it
+# stopped 40-65 s later with the register unmoved. No energy flowed, so the unit
+# sent no MeterValues, so no row reached meter_values_parsed and no session
+# existed — while the StartTransaction alone was enough to disqualify the episode
+# from the failed-attempt path too. Invisible on both counts.
+#
+# A StartTransaction CALL carries no transactionId (that arrives in the
+# CALL_RESULT, which the webhook does not forward — see note 2 above), so the
+# stop has to be found positionally. The equality test IS the pairing guard: the
+# registers are per-connector cumulative Wh in the millions, so a StopTransaction
+# belonging to the other connector of a dual-port unit will not coincidentally
+# report a meterStop equal to this connector's meterStart. That also makes the
+# match order-insensitive, so a concurrent session on the sibling connector
+# closing first cannot mask a real zero-energy attempt.
+#
+# Deliberately NOT keyed on "no MeterValues for this transaction": 8 stops in the
+# 180 days to 2026-09-09 delivered real energy with no meter_values_parsed rows
+# and no Charging status (all in the 2026-06-28/29 webhook-replay bursts, where
+# an ingest outage dropped the samples). Keying on absence would have booked
+# those as failed attempts. meterStop = meterStart is the charger's own
+# assertion and survives an ingest gap.
+#
+# The 2 h cap matches the episode cap in `attempts`.
+ZERO_ENERGY_TX_SQL = """
+                        SELECT 1 FROM ocpp_events sp
+                         WHERE sp.asset_id = e.asset_id
+                           AND sp.action   = 'StopTransaction'
+                           AND sp.received_at >  e.received_at
+                           AND sp.received_at <  e.received_at + INTERVAL '2 hours'
+                           AND (CASE WHEN sp.action_payload->>'meterStop' ~ '^[0-9]+$'
+                                     THEN (sp.action_payload->>'meterStop')::bigint END)
+                             = (CASE WHEN e.action_payload->>'meterStart' ~ '^[0-9]+$'
+                                     THEN (e.action_payload->>'meterStart')::bigint END)
+"""
+
+
 def _expand(sql: str) -> str:
     """Splice the shared fragments into a query.
 
@@ -362,6 +404,7 @@ def _expand(sql: str) -> str:
         sql.replace("/*ENERGY_SOURCES*/",  SESSION_ENERGY_SOURCES_SQL)
            .replace("/*ENERGY_COALESCE*/", SESSION_ENERGY_COALESCE_SQL)
            .replace("/*DOUBLE_CHARGE*/",   DOUBLE_CHARGE_SQL)
+           .replace("/*ZERO_ENERGY_TX*/",  ZERO_ENERGY_TX_SQL)
     )
 
 
@@ -586,6 +629,9 @@ async def get_sessions(
             -- only Authorize was a rejected AutoCharge VID — a real driver plugged
             -- in and never got authorized, which is exactly the failed attempt the
             -- operator wants to see.
+            -- EXCEPTION 2 (v3.6): an episode where the charger opened a transaction
+            -- that then metered nothing at all.  See the zero-energy guard in
+            -- charge_sig and branch (2d) below.
             sn AS (
                 SELECT
                     asset_id,
@@ -601,12 +647,14 @@ async def get_sessions(
                   AND action_payload->>'status' IS NOT NULL
             ),
             charge_sig AS (   -- any signal that a transaction actually began
-                SELECT asset_id, connector_id, received_at
-                FROM ocpp_events
-                WHERE asset_id = ANY($1::text[])
-                  AND ( (action = 'StatusNotification'
-                         AND action_payload->>'status' = 'Charging')
-                        OR action = 'StartTransaction' )
+                                -- AND delivered something
+                SELECT e.asset_id, e.connector_id, e.received_at
+                FROM ocpp_events e
+                WHERE e.asset_id = ANY($1::text[])
+                  AND ( (e.action = 'StatusNotification'
+                         AND e.action_payload->>'status' = 'Charging')
+                        OR ( e.action = 'StartTransaction'
+                             AND NOT EXISTS (/*ZERO_ENERGY_TX*/) ) )
             ),
             avail AS (        -- connector cleared / unplugged
                 SELECT asset_id, connector_id, received_at
@@ -710,6 +758,25 @@ async def get_sessions(
                                                           AND a.episode_end
                             )
                         )
+                        -- (2d) v3.6: or the charger opened a transaction during
+                        -- this episode.  Condition (1) has already established
+                        -- that nothing in the episode counted as charging, and
+                        -- charge_sig now discounts a StartTransaction whose
+                        -- register never moved (ZERO_ENERGY_TX_SQL) — so reaching
+                        -- here means the unit accepted a credential, opened a
+                        -- transaction and metered nothing.  That is the charger's
+                        -- own account of a driver who tried and got no energy, so
+                        -- it stands alone: no Authorize shape test, no fault code
+                        -- allowlist.  Covers the Alpitronic V2G/EVCommunicationError
+                        -- family, which never raises status 'Faulted' (it stays
+                        -- 'Preparing') and so slips past (2b) and (2c).
+                        OR EXISTS (
+                            SELECT 1 FROM ocpp_events sx
+                            WHERE sx.asset_id = a.station_id
+                              AND sx.action = 'StartTransaction'
+                              AND sx.connector_id IS NOT DISTINCT FROM a.connector_id
+                              AND sx.received_at BETWEEN a.attempt_at AND a.episode_end
+                        )
                     )
             ),
             failed_rows AS (
@@ -729,12 +796,24 @@ async def get_sessions(
                     NULL::numeric                       AS soc_last_nonzero,
                     -- Surface the credential that failed (e.g. the rejected
                     -- AutoCharge VID) so repeat offenders are visible in the table.
-                    (SELECT az.action_payload->>'idTag' FROM ocpp_events az
-                     WHERE az.asset_id = f.station_id
-                       AND az.action = 'Authorize'
-                       AND az.received_at BETWEEN f.attempt_at - INTERVAL '30 seconds'
-                                              AND f.episode_end
-                     ORDER BY az.received_at ASC LIMIT 1) AS id_tag,
+                    -- v3.6: fall back to the StartTransaction idTag. An Alpitronic
+                    -- with AutoCharge enrolled sends no Authorize at all and stamps
+                    -- the VID straight onto StartTransaction (see _vid_tag), so a
+                    -- (2d) zero-energy attempt would otherwise name no credential.
+                    COALESCE(
+                        (SELECT az.action_payload->>'idTag' FROM ocpp_events az
+                          WHERE az.asset_id = f.station_id
+                            AND az.action = 'Authorize'
+                            AND az.received_at BETWEEN f.attempt_at - INTERVAL '30 seconds'
+                                                   AND f.episode_end
+                          ORDER BY az.received_at ASC LIMIT 1),
+                        (SELECT sx.action_payload->>'idTag' FROM ocpp_events sx
+                          WHERE sx.asset_id = f.station_id
+                            AND sx.action = 'StartTransaction'
+                            AND sx.connector_id IS NOT DISTINCT FROM f.connector_id
+                            AND sx.received_at BETWEEN f.attempt_at AND f.episode_end
+                          ORDER BY sx.received_at ASC LIMIT 1)
+                    )                                   AS id_tag,
                     NULL::text                          AS auth_tag,
                     NULL::numeric                       AS price_per_kwh,
                     NULL::numeric                       AS connection_fee,
@@ -812,8 +891,12 @@ async def get_sessions(
 
         status = "completed" if r["kind"] == "session" else "failed_start"
 
-        # Failed starts never authenticated, so they get no method (matches the
-        # export, which blanks column N for them).
+        # Failed starts get no method (matches the export, which blanks column N
+        # for them). v3.6: a (2d) zero-energy attempt DID authenticate — the
+        # charger opened a transaction — so this is now a display choice rather
+        # than a statement of fact. The credential still shows in id_tag, which
+        # is the part an operator chasing a repeat failure actually needs; the
+        # method column stays blank so it keeps meaning "this driver paid by X".
         auth_method = (
             None if status == "failed_start"
             else (_auth_method(r["auth_tag"] or "", bool(r["card_matched"])) or None)

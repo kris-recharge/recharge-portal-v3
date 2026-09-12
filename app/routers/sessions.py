@@ -704,13 +704,11 @@ async def get_sessions(
                     -- (2) but a real user attempt is evidenced by either:
                     AND (
                         -- (2a) a real, non-AutoCharge credential was presented:
-                        -- a token (non-VID) Authorize.  VID:* Authorizes are AutoCharge
-                        -- probes (Blocked when AutoCharge isn't configured) and on their
-                        -- own are NOT a user charge attempt; a plug-in that never
-                        -- produced any Authorize (plug-and-unplug) is likewise ignored.
-                        -- This keeps the CC/app-reader stall case the operator cares
-                        -- about.  Authorize messages carry no connector_id, so match on
-                        -- station + time window.
+                        -- a token (non-VID) Authorize — the CC/app-reader stall the
+                        -- operator cares about.  VID:* Authorizes are handled by (2e)
+                        -- below; a plug-in that produced no Authorize at all
+                        -- (plug-and-unplug) is still ignored.  Authorize messages
+                        -- carry no connector_id, so match on station + time window.
                         EXISTS (
                             SELECT 1 FROM ocpp_events az
                             WHERE az.asset_id = a.station_id
@@ -776,6 +774,41 @@ async def get_sessions(
                               AND sx.action = 'StartTransaction'
                               AND sx.connector_id IS NOT DISTINCT FROM a.connector_id
                               AND sx.received_at BETWEEN a.attempt_at AND a.episode_end
+                        )
+                        -- (2e) or an AutoCharge VID was presented and no
+                        -- transaction was ever opened.  (2d) covers the vehicle
+                        -- that authorised and drew nothing; this covers the one
+                        -- that never got that far, which is what an unenrolled
+                        -- car looks like.  Condition (1) has already excluded
+                        -- every episode that reached charging, so a VID Authorize
+                        -- still standing here is a driver who asked and was
+                        -- refused.
+                        --
+                        -- Autel is why this cannot lean on a fault the way (2b)
+                        -- and (2c) do.  On 11 Sep 2026 a Cybertruck was rejected
+                        -- twice at Glennallen (Authorize -> Invalid, 12:47 and
+                        -- 12:50 AK); the MaxiChargerDC simply went Preparing ->
+                        -- Available with no Faulted status and no vendorErrorCode,
+                        -- so both attempts fell through every branch and the
+                        -- operator saw nothing until the VID was enrolled and the
+                        -- third try took.  Treating a VID Authorize as a mere
+                        -- "probe" only ever held for chargers that announce a
+                        -- refusal by faulting.
+                        --
+                        -- LIMIT OF THE EVIDENCE: ocpp_events stores CALL requests
+                        -- only, never CALLRESULTs, so the Invalid/Accepted verdict
+                        -- on an Authorize is not in this database at all (it lives
+                        -- only in LynkWell's log export).  A refused credential and
+                        -- a driver who plugged in and thought better of it are
+                        -- therefore indistinguishable here; both surface as a
+                        -- failed start, which is the safer of the two errors.
+                        OR EXISTS (
+                            SELECT 1 FROM ocpp_events az
+                            WHERE az.asset_id = a.station_id
+                              AND az.action = 'Authorize'
+                              AND az.action_payload->>'idTag' LIKE 'VID:%'
+                              AND az.received_at BETWEEN a.attempt_at - INTERVAL '30 seconds'
+                                                     AND a.episode_end
                         )
                     )
             ),

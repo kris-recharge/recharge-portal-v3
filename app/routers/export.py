@@ -341,7 +341,8 @@ async def export_sessions(
                     )
                     -- (2) and a real user attempt is evidenced by either:
                     AND (
-                        EXISTS (   -- (2a) a real, non-AutoCharge credential was presented
+                        EXISTS (   -- (2a) a real, non-AutoCharge credential was
+                                   -- presented. VID:* Authorizes are (2e).
                             SELECT 1 FROM ocpp_events az
                             WHERE az.asset_id = a.station_id
                               AND az.action = 'Authorize'
@@ -390,6 +391,21 @@ async def export_sessions(
                               AND sx.action = 'StartTransaction'
                               AND sx.connector_id IS NOT DISTINCT FROM a.connector_id
                               AND sx.received_at BETWEEN a.attempt_at AND a.episode_end
+                        )
+                        OR EXISTS (   -- (2e) an AutoCharge VID was presented and no
+                                      -- transaction was ever opened — an unenrolled
+                                      -- car. Autel clears Preparing -> Available with
+                                      -- no fault and no vendor code, so this cannot
+                                      -- lean on a fault the way (2b)/(2c) do. See the
+                                      -- long note in sessions.py, including why a
+                                      -- refusal and an abandoned plug-in cannot be
+                                      -- told apart (CALLRESULTs are not stored).
+                            SELECT 1 FROM ocpp_events az
+                            WHERE az.asset_id = a.station_id
+                              AND az.action = 'Authorize'
+                              AND az.action_payload->>'idTag' LIKE 'VID:%'
+                              AND az.received_at BETWEEN a.attempt_at - INTERVAL '30 seconds'
+                                                     AND a.episode_end
                         )
                     )
             ),

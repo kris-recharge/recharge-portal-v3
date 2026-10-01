@@ -116,8 +116,12 @@ async def update_user(user_id: str, body: UserPatch, _: AdminUser):
     if body.email            is not None: fields["email"]            = body.email
     if body.name             is not None: fields["name"]             = body.name
     if body.active           is not None: fields["active"]           = body.active
-    if body.allowed_evse_ids is not None: fields["allowed_evse_ids"] = body.allowed_evse_ids
     if body.can_submit_pm    is not None: fields["can_submit_pm"]    = body.can_submit_pm
+    # An explicit null means "full access" (NULL in the DB), not "leave unchanged" —
+    # otherwise unchecking every EVSE in the Admin form can never restore full
+    # access, and the user stays pinned to a fixed list that misses new chargers.
+    if "allowed_evse_ids" in body.model_fields_set:
+        fields["allowed_evse_ids"] = body.allowed_evse_ids
 
     if not fields:
         raise HTTPException(400, "No fields to update")

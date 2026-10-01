@@ -114,6 +114,12 @@ CREATE INDEX IF NOT EXISTS idx_fired_alerts_asset_id  ON fired_alerts (asset_id)
 -- explicitly from the Admin center.
 ALTER TABLE portal_users ADD COLUMN IF NOT EXISTS can_submit_pm BOOLEAN NOT NULL DEFAULT false;
 
+-- allowed_evse_ids: NULL = full access (staff), list = allowlist, '{}' = deny.
+-- auth.py, alerts and SSE all treat NULL as unrestricted, but the column was
+-- created NOT NULL, so "leave all unchecked = full access" in the Admin center
+-- failed with a 500. Default stays '{}' so new rows are still deny-by-default.
+ALTER TABLE portal_users ALTER COLUMN allowed_evse_ids DROP NOT NULL;
+
 -- ── Utility data collection tables ───────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS utility_accounts (

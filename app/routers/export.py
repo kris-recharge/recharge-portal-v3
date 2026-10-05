@@ -186,7 +186,7 @@ async def export_sessions(
                        -- Preparing. Removed 22 borrowed VIDs across all history —
                        -- every one fired while this connector was Unavailable,
                        -- Available or Charging — and cost no correct ones.
-                       AND EXISTS (
+                       AND (EXISTS (
                            SELECT 1 FROM ocpp_events p
                             WHERE p.asset_id = s.station_id
                               AND p.action = 'StatusNotification'
@@ -201,6 +201,32 @@ async def export_sessions(
                                      AND p2.received_at > p.received_at
                                      AND p2.received_at <= oe.received_at
                                      AND p2.action_payload->>'status' <> 'Preparing'))
+                       -- ABB late-Preparing grace — mirrors sessions.py exactly;
+                       -- see the comment there.
+                         OR (EXISTS (
+                               SELECT 1 FROM ocpp_events p
+                                WHERE p.asset_id = s.station_id
+                                  AND p.action = 'StatusNotification'
+                                  AND p.connector_id = s.connector_id
+                                  AND p.action_payload->>'status' = 'Preparing'
+                                  AND p.received_at >  oe.received_at
+                                  AND p.received_at <= oe.received_at + INTERVAL '5 seconds')
+                             AND NOT EXISTS (
+                               SELECT 1 FROM ocpp_events p
+                                WHERE p.asset_id = s.station_id
+                                  AND p.action = 'StatusNotification'
+                                  AND p.connector_id <> s.connector_id
+                                  AND p.connector_id > 0
+                                  AND p.action_payload->>'status' = 'Preparing'
+                                  AND p.received_at <= oe.received_at
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM ocpp_events p2
+                                       WHERE p2.asset_id = s.station_id
+                                         AND p2.action = 'StatusNotification'
+                                         AND p2.connector_id = p.connector_id
+                                         AND p2.received_at > p.received_at
+                                         AND p2.received_at <= oe.received_at
+                                         AND p2.action_payload->>'status' <> 'Preparing'))))
                      ORDER BY ABS(EXTRACT(EPOCH FROM (oe.received_at - s.start_utc))) ASC
                      LIMIT 1) AS vid_tag,
                     ep.price_per_kwh,

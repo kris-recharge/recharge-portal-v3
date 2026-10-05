@@ -522,7 +522,7 @@ async def get_sessions(
                        -- Preparing. Removed 22 borrowed VIDs across all history —
                        -- every one fired while this connector was Unavailable,
                        -- Available or Charging — and cost no correct ones.
-                       AND EXISTS (
+                       AND (EXISTS (
                            SELECT 1 FROM ocpp_events p
                             WHERE p.asset_id = s.station_id
                               AND p.action = 'StatusNotification'
@@ -537,6 +537,39 @@ async def get_sessions(
                                      AND p2.received_at > p.received_at
                                      AND p2.received_at <= o.received_at
                                      AND p2.action_payload->>'status' <> 'Preparing'))
+                       -- The ABB Terras' Preparing reaches the webhook up to 2.3 s
+                       -- AFTER the Authorize it caused (charger-stamped it's ~5 s
+                       -- earlier — delivery order, not charger order), so the check
+                       -- above saw Available and blanked the VID: 24 of 72 probes on
+                       -- CEA HQ + AT Charger #1. Accept a Preparing landing within
+                       -- 5 s after the probe, but only when no connector was already
+                       -- Preparing at it — otherwise that late Preparing is a second
+                       -- car plugging into the other side (5 such cases on ARG, CL-B
+                       -- and Delta, all correctly owned by the earlier connector).
+                         OR (EXISTS (
+                               SELECT 1 FROM ocpp_events p
+                                WHERE p.asset_id = s.station_id
+                                  AND p.action = 'StatusNotification'
+                                  AND p.connector_id = s.connector_id
+                                  AND p.action_payload->>'status' = 'Preparing'
+                                  AND p.received_at >  o.received_at
+                                  AND p.received_at <= o.received_at + INTERVAL '5 seconds')
+                             AND NOT EXISTS (
+                               SELECT 1 FROM ocpp_events p
+                                WHERE p.asset_id = s.station_id
+                                  AND p.action = 'StatusNotification'
+                                  AND p.connector_id <> s.connector_id
+                                  AND p.connector_id > 0
+                                  AND p.action_payload->>'status' = 'Preparing'
+                                  AND p.received_at <= o.received_at
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM ocpp_events p2
+                                       WHERE p2.asset_id = s.station_id
+                                         AND p2.action = 'StatusNotification'
+                                         AND p2.connector_id = p.connector_id
+                                         AND p2.received_at > p.received_at
+                                         AND p2.received_at <= o.received_at
+                                         AND p2.action_payload->>'status' <> 'Preparing'))))
                      ORDER BY ABS(EXTRACT(EPOCH FROM (o.received_at - s.start_utc))) ASC
                      LIMIT 1) AS id_tag,
                     -- v3.3: the idTag that actually STARTED the transaction, for the

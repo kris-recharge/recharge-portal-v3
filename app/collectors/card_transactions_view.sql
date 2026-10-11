@@ -57,7 +57,11 @@ AS $$
 $$;
 
 -- ── The view ──────────────────────────────────────────────────────────────────
-CREATE OR REPLACE VIEW card_transactions AS
+-- security_invoker is not optional: CREATE OR REPLACE resets view options, and
+-- in definer mode this view handed all card data to the anon key (see
+-- app/migrations/20261010_lock_down_public_api.sql). The REVOKE at the bottom
+-- undoes Supabase's default anon/authenticated grants on a fresh create.
+CREATE OR REPLACE VIEW card_transactions WITH (security_invoker = true) AS
 
 SELECT
     'payter'                              AS vendor,
@@ -101,6 +105,8 @@ SELECT
 FROM nayax_transactions n
 JOIN nayax_session_matches m ON m.nayax_id = n.nayax_id
 WHERE n.tran_status_id = 12;              -- 12 = Settled
+
+REVOKE ALL ON card_transactions FROM anon, authenticated;
 
 -- Callers join on (station_id, connector_id, transaction_id), which is UNIQUE
 -- in both match tables, so this view has at most one row per charging session.

@@ -879,6 +879,7 @@ async def export_maintenance(
                     mr.technician_name,
                     mr.onsite_hours,
                     mr.mobilized_hours,
+                    mr.labor_rate,
                     mr.overall_result,
                     mr.firmware_version,
                     mr.work_description,
@@ -906,6 +907,7 @@ async def export_maintenance(
                     mr.technician_name,
                     mr.onsite_hours,
                     mr.mobilized_hours,
+                    mr.labor_rate,
                     mr.overall_result,
                     mr.firmware_version,
                     mr.work_description,
@@ -960,7 +962,12 @@ async def export_maintenance(
                     part_name,
                     part_number,
                     action_taken,
-                    notes
+                    notes,
+                    quantity,
+                    unit_cost,
+                    warranty,
+                    vendor,
+                    invoice_number
                 FROM maintenance_parts_replaced
                 WHERE record_id = ANY($1::uuid[])
                 ORDER BY record_id, part_name
@@ -981,7 +988,7 @@ async def export_maintenance(
     # ── Sheet 1: PM Logs (one row per log) ────────────────────────────────────
     log_columns = [
         "Log ID", "EVSE", "Location", "Record Type", "Technician",
-        "Submitted (AK)", "Onsite Hrs", "Mobilized Hrs", "Overall Result",
+        "Submitted (AK)", "Onsite Hrs", "Mobilized Hrs", "Labor Rate ($/hr)", "Overall Result",
         "Firmware", "Work Description", "Additional Work Needed",
         "Planned Future Work",
     ]
@@ -996,6 +1003,7 @@ async def export_maintenance(
             _ak_dt(r["record_timestamp"]),
             float(r["onsite_hours"]) if r["onsite_hours"] is not None else "",
             float(r["mobilized_hours"]) if r["mobilized_hours"] is not None else "",
+            float(r["labor_rate"] or 0),
             r["overall_result"] or "",
             r["firmware_version"] or "",
             r["work_description"] or "",
@@ -1025,10 +1033,13 @@ async def export_maintenance(
             tr["task_notes"] or "",
         ])
 
-    # ── Sheet 3: Parts Replaced (one row per part) ────────────────────────────
+    # ── Sheet 3: Parts Replaced (one row per part / material / service) ───────
+    # Line Total is what the Year-End P&L counts: quantity × unit cost, zero
+    # when the line is warranty-covered.
     part_columns = [
         "Log ID", "EVSE", "Submitted (AK)", "Part Name", "Part Number",
-        "Action Taken", "Notes",
+        "Action Taken", "Notes", "Qty", "Unit Cost", "Warranty", "Line Total",
+        "Vendor", "Invoice #",
     ]
     part_data: list[list] = []
     for p in part_rows:
@@ -1041,6 +1052,13 @@ async def export_maintenance(
             p["part_number"] or "",
             p["action_taken"] or "",
             p["notes"] or "",
+            float(p["quantity"]) if p["quantity"] is not None else "",
+            float(p["unit_cost"]) if p["unit_cost"] is not None else "",
+            "Yes" if p["warranty"] else "No",
+            (0.0 if p["warranty"] else round(float(p["quantity"]) * float(p["unit_cost"]), 2))
+            if p["unit_cost"] is not None else "",
+            p["vendor"] or "",
+            p["invoice_number"] or "",
         ])
 
     import openpyxl

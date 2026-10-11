@@ -746,10 +746,17 @@ export interface MaintenanceOverviewResponse {
 }
 
 export interface PartReplaced {
+  id?: string
   part_name: string
   part_number: string | null
-  action_taken: 'replaced' | 'repaired' | 'cleaned' | 'adjusted'
+  // material = consumable/hardware purchase; service = contract labor / remote support
+  action_taken: 'replaced' | 'repaired' | 'cleaned' | 'adjusted' | 'material' | 'service'
   notes: string | null
+  quantity: number
+  unit_cost: number | null      // null = not priced yet
+  warranty: boolean             // covered: shown, not counted as a cost
+  vendor: string | null
+  invoice_number: string | null
 }
 
 export interface MaintenanceRecord {
@@ -762,6 +769,7 @@ export interface MaintenanceRecord {
   work_description: string | null
   onsite_hours: number | null
   mobilized_hours: number | null
+  labor_rate: number            // $/hr over onsite + mobilized hours
   additional_work_needed: boolean
   planned_future_work: string | null
   hyperdoc_required: boolean
@@ -826,10 +834,11 @@ export interface SubmitRecordBody {
   work_description?: string | null
   onsite_hours?: number | null
   mobilized_hours?: number | null
+  labor_rate?: number
   additional_work_needed: boolean
   planned_future_work?: string | null
   task_results: TaskResult[]
-  parts: { part_name: string; part_number?: string | null; action_taken: string; notes?: string | null }[]
+  parts: PartReplaced[]
 }
 
 export interface FleetUnitType {
@@ -875,6 +884,13 @@ export const updateHyperdocSubmission = (recordId: string, submittedAt: string):
   apiFetch(`/api/maintenance/records/${recordId}/hyperdoc`, {
     method: 'PATCH', body: JSON.stringify({ submitted_at: submittedAt }),
   })
+
+// Labor rate + part/material/service costs on a submitted record (admin)
+export const updateMaintenanceRecordCosts = (
+  recordId: string,
+  body: { labor_rate: number; parts: (PartReplaced & { delete?: boolean })[] },
+): Promise<{ id: string; labor_rate: number; parts: PartReplaced[] }> =>
+  apiFetch(`/api/maintenance/records/${recordId}/costs`, { method: 'PUT', body: JSON.stringify(body) })
 
 // Sites list
 export const fetchSites = (): Promise<Site[]> =>

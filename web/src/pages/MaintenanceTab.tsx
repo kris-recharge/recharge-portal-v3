@@ -8,22 +8,26 @@
  *   LogRepairModal — modal: log repair / warranty / inspection / other
  *   MoveUnitModal  — modal: move unit to new site (admin)
  *   RetireUnitModal — modal: retire unit (admin)
+ *   RecordCostEditor — inline: labor rate + part/material/service costs on a record (admin)
  */
 
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft, Search, RefreshCw, AlertTriangle, CheckCircle,
-  Clock, MapPin, Wrench, ChevronDown, ChevronUp, X, Plus, Trash2,
+  Clock, MapPin, Wrench, ChevronDown, ChevronUp, X,
   Shield, AlertCircle, Package, FileText, Star,
 } from 'lucide-react'
 import {
   fetchMaintenanceOverview, fetchMaintenanceUnit, fetchPMTemplate,
   submitMaintenanceRecord, updateHyperdocSubmission, moveFleetUnit,
-  retireFleetUnit, patchFleetUnit, fetchSites,
+  retireFleetUnit, patchFleetUnit, fetchSites, updateMaintenanceRecordCosts,
   type MaintenanceUnit, type MaintenanceRecord, type PMTemplateTask,
-  type TaskResult, type PartReplaced, type Site,
+  type TaskResult, type Site,
 } from '../lib/api'
+import {
+  PartLinesEditor, PART_ACTIONS, laborCost, lineCost, toPayload, usd, type PartLine,
+} from '../components/PartLinesEditor'
 
 
 const PM_TYPE_LABELS: Record<string, string> = {
@@ -444,7 +448,8 @@ function PMForm({ chargerId, chargerName, pmType, technicianName, hyperdocRequir
   const [addlWork, setAddlWork]             = useState(false)
   const [plannedWork, setPlannedWork]       = useState('')
   const [notes, setNotes]                   = useState('')
-  const [parts, setParts]                   = useState<Partial<PartReplaced>[]>([])
+  const [laborRate, setLaborRate]           = useState('0')
+  const [parts, setParts]                   = useState<PartLine[]>([])
   const [submitErr, setSubmitErr]           = useState<string | null>(null)
 
   const mutation = useMutation({
@@ -489,18 +494,6 @@ function PMForm({ chargerId, chargerName, pmType, technicianName, hyperdocRequir
     }))
   }
 
-  function addPart() {
-    setParts(p => [...p, { action_taken: 'replaced' }])
-  }
-
-  function removePart(i: number) {
-    setParts(p => p.filter((_, idx) => idx !== i))
-  }
-
-  function updatePart(i: number, update: Partial<PartReplaced>) {
-    setParts(p => p.map((x, idx) => idx === i ? { ...x, ...update } : x))
-  }
-
   function handleSubmit() {
     setSubmitErr(null)
     const recordTypeMap: Record<string, string> = {
@@ -519,10 +512,11 @@ function PMForm({ chargerId, chargerName, pmType, technicianName, hyperdocRequir
       work_description:      notes.trim() || null,
       onsite_hours:          onsiteHours !== '' ? parseFloat(onsiteHours) : null,
       mobilized_hours:       mobilizedHours !== '' ? parseFloat(mobilizedHours) : null,
+      labor_rate:            laborRate !== '' ? parseFloat(laborRate) : 0,
       additional_work_needed: addlWork,
       planned_future_work:   addlWork ? plannedWork.trim() : null,
       task_results:          Object.values(taskResults),
-      parts:                 parts.filter(p => p.part_name?.trim()) as PartReplaced[],
+      parts:                 toPayload(parts),
     })
   }
 
@@ -596,7 +590,7 @@ function PMForm({ chargerId, chargerName, pmType, technicianName, hyperdocRequir
                 />
               </FormField>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <FormField label="Onsite Hours">
                 <input
                   type="number"
@@ -617,6 +611,17 @@ function PMForm({ chargerId, chargerName, pmType, technicianName, hyperdocRequir
                   onChange={e => setMobilizedHours(e.target.value)}
                   className="input-base"
                   placeholder="e.g. 1.0"
+                />
+              </FormField>
+              <FormField label="Labor Rate ($/hr)">
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={laborRate}
+                  onChange={e => setLaborRate(e.target.value)}
+                  className="input-base"
+                  placeholder="0"
                 />
               </FormField>
             </div>
@@ -664,49 +669,8 @@ function PMForm({ chargerId, chargerName, pmType, technicianName, hyperdocRequir
               </div>
             )}
 
-            {/* Parts replaced */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-medium text-gray-500">Parts / Components Actioned</label>
-                <button
-                  onClick={addPart}
-                  className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
-                >
-                  <Plus size={12} /> Add part
-                </button>
-              </div>
-              {parts.map((p, i) => (
-                <div key={i} className="flex items-start gap-2 mb-2">
-                  <div className="grid grid-cols-3 gap-2 flex-1">
-                    <input
-                      placeholder="Part name *"
-                      value={p.part_name ?? ''}
-                      onChange={e => updatePart(i, { part_name: e.target.value })}
-                      className="input-base col-span-1"
-                    />
-                    <input
-                      placeholder="Part # (optional)"
-                      value={p.part_number ?? ''}
-                      onChange={e => updatePart(i, { part_number: e.target.value })}
-                      className="input-base col-span-1"
-                    />
-                    <select
-                      value={p.action_taken ?? 'replaced'}
-                      onChange={e => updatePart(i, { action_taken: e.target.value as PartReplaced['action_taken'] })}
-                      className="input-base col-span-1"
-                    >
-                      <option value="replaced">Replaced</option>
-                      <option value="repaired">Repaired</option>
-                      <option value="cleaned">Cleaned</option>
-                      <option value="adjusted">Adjusted</option>
-                    </select>
-                  </div>
-                  <button onClick={() => removePart(i)} className="text-gray-300 hover:text-red-400 mt-2">
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
+            {/* Parts, materials and services, with costs */}
+            <PartLinesEditor lines={parts} onChange={setParts} />
 
             {/* Additional work needed */}
             <div>
@@ -927,7 +891,8 @@ function LogRepairModal({ chargerId, chargerName, technicianName, onClose, onSub
   const [mobilizedHours, setMobilizedHours] = useState('')
   const [addlWork, setAddlWork]             = useState(false)
   const [plannedWork, setPlannedWork]       = useState('')
-  const [parts, setParts]                  = useState<Partial<PartReplaced>[]>([])
+  const [laborRate, setLaborRate]           = useState('0')
+  const [parts, setParts]                  = useState<PartLine[]>([])
   const [result, setResult]                = useState<'pass' | 'conditional' | 'fail'>('pass')
   const [submitErr, setSubmitErr]          = useState<string | null>(null)
 
@@ -950,10 +915,11 @@ function LogRepairModal({ chargerId, chargerName, technicianName, onClose, onSub
       work_description: description.trim() || null,
       onsite_hours: onsiteHours !== '' ? parseFloat(onsiteHours) : null,
       mobilized_hours: mobilizedHours !== '' ? parseFloat(mobilizedHours) : null,
+      labor_rate: laborRate !== '' ? parseFloat(laborRate) : 0,
       additional_work_needed: addlWork,
       planned_future_work: addlWork ? plannedWork.trim() : null,
       task_results: [],
-      parts: parts.filter(p => p.part_name?.trim()) as PartReplaced[],
+      parts: toPayload(parts),
     })
   }
 
@@ -961,7 +927,7 @@ function LogRepairModal({ chargerId, chargerName, technicianName, onClose, onSub
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 overflow-y-auto py-6 px-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl">
         <div className="flex items-center justify-between p-5 border-b border-gray-100">
           <h3 className="font-semibold text-gray-900">Log Work — {chargerName}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
@@ -984,7 +950,7 @@ function LogRepairModal({ chargerId, chargerName, technicianName, onClose, onSub
             <input value={technician} onChange={e => setTechnician(e.target.value)} className="input-base w-full" />
           </FormField>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <FormField label="Onsite Hours">
               <input
                 type="number"
@@ -1005,6 +971,17 @@ function LogRepairModal({ chargerId, chargerName, technicianName, onClose, onSub
                 onChange={e => setMobilizedHours(e.target.value)}
                 className="input-base w-full"
                 placeholder="e.g. 1.0"
+              />
+            </FormField>
+            <FormField label="Labor Rate ($/hr)">
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={laborRate}
+                onChange={e => setLaborRate(e.target.value)}
+                className="input-base w-full"
+                placeholder="0"
               />
             </FormField>
           </div>
@@ -1040,30 +1017,8 @@ function LogRepairModal({ chargerId, chargerName, technicianName, onClose, onSub
             </div>
           </FormField>
 
-          {/* Parts */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-medium text-gray-500">Parts</label>
-              <button onClick={() => setParts(p => [...p, { action_taken: 'replaced' }])}
-                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800">
-                <Plus size={12} /> Add
-              </button>
-            </div>
-            {parts.map((p, i) => (
-              <div key={i} className="flex items-start gap-2 mb-2">
-                <div className="grid grid-cols-2 gap-2 flex-1">
-                  <input placeholder="Part name *" value={p.part_name ?? ''} onChange={e => setParts(prev => prev.map((x, idx) => idx === i ? { ...x, part_name: e.target.value } : x))} className="input-base" />
-                  <select value={p.action_taken ?? 'replaced'} onChange={e => setParts(prev => prev.map((x, idx) => idx === i ? { ...x, action_taken: e.target.value as PartReplaced['action_taken'] } : x))} className="input-base">
-                    <option value="replaced">Replaced</option>
-                    <option value="repaired">Repaired</option>
-                    <option value="cleaned">Cleaned</option>
-                    <option value="adjusted">Adjusted</option>
-                  </select>
-                </div>
-                <button onClick={() => setParts(p => p.filter((_, idx) => idx !== i))} className="text-gray-300 hover:text-red-400 mt-2"><Trash2 size={14} /></button>
-              </div>
-            ))}
-          </div>
+          {/* Parts, materials and services, with costs */}
+          <PartLinesEditor lines={parts} onChange={setParts} />
 
           <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
             <input type="checkbox" checked={addlWork} onChange={e => setAddlWork(e.target.checked)} className="rounded" />
@@ -1561,21 +1516,101 @@ function RecordRow({ record: r, chargerId, isAdmin, expanded, onToggle }: {
           )}
           {r.parts.length > 0 && (
             <div>
-              <div className="text-xs font-medium text-gray-500 mb-1">Parts / Actions</div>
+              <div className="text-xs font-medium text-gray-500 mb-1">Parts / Materials / Services</div>
               <div className="space-y-0.5">
                 {r.parts.map((p, i) => (
-                  <div key={i} className="text-xs text-gray-600 flex gap-2">
+                  <div key={p.id ?? i} className="text-xs text-gray-600 flex gap-2">
                     <span className="font-medium">{p.part_name}</span>
                     {p.part_number && <span className="text-gray-400">#{p.part_number}</span>}
-                    <span className="text-gray-400 capitalize">{p.action_taken}</span>
+                    <span className="text-gray-400">
+                      {PART_ACTIONS.find(a => a.value === p.action_taken)?.label ?? p.action_taken}
+                    </span>
+                    {p.quantity !== 1 && <span className="text-gray-400">× {p.quantity}</span>}
+                    <span className="ml-auto">
+                      {p.warranty ? <span className="text-green-600">Warranty</span>
+                        : p.unit_cost != null ? usd(lineCost(p)) : <span className="text-gray-400">not priced</span>}
+                    </span>
                   </div>
                 ))}
               </div>
             </div>
           )}
+          <RecordCostSummary record={r} />
+          {isAdmin && <RecordCostEditor record={r} chargerId={chargerId} />}
           {isAdmin && <HyperdocRow record={r} chargerId={chargerId} />}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Record costs ──────────────────────────────────────────────────────────────
+
+function RecordCostSummary({ record: r }: { record: MaintenanceRecord }) {
+  const labor = laborCost(r)
+  const material = r.parts.reduce((s, p) => s + lineCost(p), 0)
+  if (!labor && !material && !r.labor_rate) return null
+  return (
+    <div className="flex gap-4 text-xs text-gray-600">
+      <span><span className="font-medium text-gray-500">Labor:</span> {usd(labor)}
+        {r.labor_rate ? ` (${usd(r.labor_rate)}/hr)` : ''}</span>
+      <span><span className="font-medium text-gray-500">Material & service:</span> {usd(material)}</span>
+      <span className="font-semibold">Total {usd(labor + material)}</span>
+    </div>
+  )
+}
+
+/** Admin: price a submitted record once the invoices are in. */
+function RecordCostEditor({ record, chargerId }: { record: MaintenanceRecord; chargerId: string }) {
+  const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const [laborRate, setLaborRate] = useState(String(record.labor_rate ?? 0))
+  const [lines, setLines] = useState<PartLine[]>(record.parts)
+  const [err, setErr] = useState<string | null>(null)
+
+  const mutation = useMutation({
+    mutationFn: () => updateMaintenanceRecordCosts(record.id, {
+      labor_rate: laborRate !== '' ? parseFloat(laborRate) : 0,
+      parts: toPayload(lines),
+    }),
+    onSuccess: (res) => {
+      setLines(res.parts)
+      setOpen(false)
+      queryClient.invalidateQueries({ queryKey: ['maintenance-unit', chargerId] })
+    },
+    onError: (e: Error) => setErr(e.message),
+  })
+
+  if (!open) {
+    return (
+      <button onClick={() => { setLines(record.parts); setLaborRate(String(record.labor_rate ?? 0)); setOpen(true) }}
+              className="text-xs text-blue-600 hover:text-blue-800">
+        Edit costs
+      </button>
+    )
+  }
+  return (
+    <div className="p-3 rounded-lg border border-blue-100 bg-white space-y-3">
+      <div className="flex items-end gap-3">
+        <FormField label="Labor Rate ($/hr)">
+          <input type="number" min="0" step="1" value={laborRate}
+                 onChange={e => setLaborRate(e.target.value)} className="input-base w-28" />
+        </FormField>
+        <span className="text-xs text-gray-500 pb-2">
+          × {(record.onsite_hours ?? 0) + (record.mobilized_hours ?? 0)} hrs
+        </span>
+      </div>
+      <PartLinesEditor lines={lines} onChange={setLines} />
+      {err && <p className="text-xs text-red-600">{err}</p>}
+      <div className="flex justify-end gap-2">
+        <button onClick={() => setOpen(false)} className="px-3 py-1.5 text-xs rounded-lg border border-gray-200">
+          Cancel
+        </button>
+        <button onClick={() => { setErr(null); mutation.mutate() }} disabled={mutation.isPending}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+          {mutation.isPending ? 'Saving…' : 'Save costs'}
+        </button>
+      </div>
     </div>
   )
 }

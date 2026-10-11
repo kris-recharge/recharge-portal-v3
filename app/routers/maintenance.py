@@ -6,6 +6,7 @@ Routes:
   GET  /api/maintenance/templates/{charger_id}/{pm_type}  — PM form tasks
   POST /api/maintenance/records               — submit maintenance record (admin only)
   PATCH /api/maintenance/records/{record_id}/hyperdoc     — mark Hyperdoc submitted (admin)
+  PUT  /api/maintenance/records/{record_id}/costs         — labor rate + part/material costs (admin)
 
   GET  /api/admin/fleet/unit-types            — list unit types (admin)
   POST /api/admin/fleet/unit-types            — create unit type (admin)
@@ -462,6 +463,7 @@ async def maintenance_unit_detail(charger_id: str, user: CurrentUser):
                 mr.work_description,
                 mr.onsite_hours,
                 mr.mobilized_hours,
+                mr.labor_rate,
                 mr.additional_work_needed,
                 mr.planned_future_work,
                 mr.hyperdoc_required,
@@ -483,21 +485,17 @@ async def maintenance_unit_detail(charger_id: str, user: CurrentUser):
             record_ids = [r["id"] for r in records]
             parts_rows = await conn.fetch(
                 """
-                SELECT record_id::text, part_name, part_number, action_taken, notes
+                SELECT id::text, record_id::text, part_name, part_number, action_taken, notes,
+                       quantity, unit_cost, warranty, vendor, invoice_number
                 FROM maintenance_parts_replaced
                 WHERE record_id = ANY($1::uuid[])
-                ORDER BY record_id, id
+                ORDER BY record_id, created_at, id
                 """,
                 record_ids,
             )
             parts_by_record: dict[str, list] = {}
             for p in parts_rows:
-                parts_by_record.setdefault(p["record_id"], []).append({
-                    "part_name": p["part_name"],
-                    "part_number": p["part_number"],
-                    "action_taken": p["action_taken"],
-                    "notes": p["notes"],
-                })
+                parts_by_record.setdefault(p["record_id"], []).append(_part_out(p))
         else:
             parts_by_record = {}
 
@@ -536,6 +534,7 @@ async def maintenance_unit_detail(charger_id: str, user: CurrentUser):
             "work_description": r["work_description"],
             "onsite_hours": float(r["onsite_hours"]) if r["onsite_hours"] is not None else None,
             "mobilized_hours": float(r["mobilized_hours"]) if r["mobilized_hours"] is not None else None,
+            "labor_rate": float(r["labor_rate"] or 0),
             "additional_work_needed": r["additional_work_needed"],
             "planned_future_work": r["planned_future_work"],
             "hyperdoc_required": r["hyperdoc_required"],
@@ -671,11 +670,57 @@ async def get_pm_template(charger_id: str, pm_type: str, user: CurrentUser):
 
 # ── Submit maintenance record ─────────────────────────────────────────────────
 
+_PART_ACTIONS = ("replaced", "repaired", "cleaned", "adjusted", "material", "service")
+
+
 class PartReplaced(BaseModel):
     part_name: str
     part_number: str | None = None
-    action_taken: str  # replaced|repaired|cleaned|adjusted
+    # replaced|repaired|cleaned|adjusted act on the unit; material is a
+    # consumable/hardware purchase, service is contract labor or remote support.
+    action_taken: str
     notes: str | None = None
+    # Costs feed the Year-End P&L: quantity × unit_cost, unless warranty-covered.
+    quantity: float = 1
+    unit_cost: float | None = None
+    warranty: bool = False
+    vendor: str | None = None
+    invoice_number: str | None = None
+
+
+def _validate_part(p: PartReplaced) -> None:
+    if p.action_taken not in _PART_ACTIONS:
+        raise HTTPException(400, f"action_taken must be one of {', '.join(_PART_ACTIONS)}")
+    if p.quantity <= 0 or (p.unit_cost is not None and p.unit_cost < 0):
+        raise HTTPException(400, "quantity must be > 0 and unit_cost ≥ 0")
+
+
+def _part_out(p) -> dict:
+    return {
+        "id": p["id"],
+        "part_name": p["part_name"],
+        "part_number": p["part_number"],
+        "action_taken": p["action_taken"],
+        "notes": p["notes"],
+        "quantity": float(p["quantity"]) if p["quantity"] is not None else 1.0,
+        "unit_cost": float(p["unit_cost"]) if p["unit_cost"] is not None else None,
+        "warranty": bool(p["warranty"]),
+        "vendor": p["vendor"],
+        "invoice_number": p["invoice_number"],
+    }
+
+
+async def _insert_part(conn, record_id: str, p: PartReplaced) -> None:
+    await conn.execute(
+        """
+        INSERT INTO maintenance_parts_replaced
+            (record_id, part_name, part_number, action_taken, notes,
+             quantity, unit_cost, warranty, vendor, invoice_number)
+        VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        """,
+        record_id, p.part_name, p.part_number, p.action_taken, p.notes,
+        p.quantity, p.unit_cost, p.warranty, p.vendor, p.invoice_number,
+    )
 
 
 class TaskResult(BaseModel):
@@ -698,6 +743,7 @@ class SubmitRecordBody(BaseModel):
     work_description: str | None = None
     onsite_hours: float | None = None
     mobilized_hours: float | None = None
+    labor_rate: float = 0          # $/hr over onsite + mobilized hours
     additional_work_needed: bool = False
     planned_future_work: str | None = None
     task_results: list[TaskResult] = []
@@ -708,6 +754,10 @@ class SubmitRecordBody(BaseModel):
 async def submit_record(body: SubmitRecordBody, user: PmSubmitter):
     if body.additional_work_needed and not body.planned_future_work:
         raise HTTPException(400, "planned_future_work is required when additional_work_needed is true")
+    if body.labor_rate < 0:
+        raise HTTPException(400, "labor_rate must be ≥ 0")
+    for p in body.parts:
+        _validate_part(p)
 
     async with acquire() as conn:
         # Verify charger exists and get site_id
@@ -741,14 +791,14 @@ async def submit_record(body: SubmitRecordBody, user: PmSubmitter):
                  technician_name, technician_user_id,
                  work_description, onsite_hours, mobilized_hours,
                  additional_work_needed, planned_future_work,
-                 hyperdoc_required, created_by)
+                 hyperdoc_required, created_by, labor_rate)
             VALUES ($1::uuid, $2::uuid, $3,
                     $4::uuid, $5,
                     $6, $7,
                     $8, $9::uuid,
                     $10, $11, $12,
                     $13, $14,
-                    $15, $16::uuid)
+                    $15, $16::uuid, $17)
             RETURNING id::text, record_timestamp
             """,
             body.charger_id,
@@ -767,6 +817,7 @@ async def submit_record(body: SubmitRecordBody, user: PmSubmitter):
             body.planned_future_work,
             hyperdoc_req,
             user.user_id,
+            body.labor_rate,
         )
 
         record_id = record["id"]
@@ -785,16 +836,9 @@ async def submit_record(body: SubmitRecordBody, user: PmSubmitter):
                 tr.result_text, tr.task_notes,
             )
 
-        # Insert parts replaced
+        # Insert parts / materials / services
         for p in body.parts:
-            await conn.execute(
-                """
-                INSERT INTO maintenance_parts_replaced
-                    (record_id, part_name, part_number, action_taken, notes)
-                VALUES ($1::uuid, $2, $3, $4, $5)
-                """,
-                record_id, p.part_name, p.part_number, p.action_taken, p.notes,
-            )
+            await _insert_part(conn, record_id, p)
 
     return {"id": record_id, "record_timestamp": record["record_timestamp"].isoformat()}
 
@@ -820,6 +864,69 @@ async def update_hyperdoc(record_id: str, body: HyperdocPatch, _: AdminUser):
     if not row:
         raise HTTPException(404, "Record not found")
     return {"ok": True, "id": row["id"]}
+
+
+# ── Costs on an existing record ───────────────────────────────────────────────
+# Invoices usually arrive after the visit, so the admin can price a submitted
+# record later: set the labor rate, cost/quantity/warranty on existing lines,
+# add material or service lines, or remove a line. The visit itself (tasks,
+# hours, timestamp) stays as submitted.
+
+class PartCostLine(PartReplaced):
+    id: str | None = None      # existing line; omit to add one
+    delete: bool = False
+
+
+class RecordCostsBody(BaseModel):
+    labor_rate: float = 0
+    parts: list[PartCostLine] = []
+
+
+@router.put("/api/maintenance/records/{record_id}/costs")
+async def update_record_costs(record_id: str, body: RecordCostsBody, _: AdminUser):
+    if body.labor_rate < 0:
+        raise HTTPException(400, "labor_rate must be ≥ 0")
+    for p in body.parts:
+        if not p.delete:
+            _validate_part(p)
+    async with acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "UPDATE maintenance_records SET labor_rate = $2 WHERE id = $1::uuid RETURNING id::text",
+                record_id, body.labor_rate,
+            )
+            if not row:
+                raise HTTPException(404, "Record not found")
+            for p in body.parts:
+                if p.id and p.delete:
+                    await conn.execute(
+                        "DELETE FROM maintenance_parts_replaced WHERE id = $1::uuid AND record_id = $2::uuid",
+                        p.id, record_id,
+                    )
+                elif p.id:
+                    await conn.execute(
+                        """
+                        UPDATE maintenance_parts_replaced
+                        SET part_name = $3, part_number = $4, action_taken = $5, notes = $6,
+                            quantity = $7, unit_cost = $8, warranty = $9, vendor = $10,
+                            invoice_number = $11
+                        WHERE id = $1::uuid AND record_id = $2::uuid
+                        """,
+                        p.id, record_id, p.part_name, p.part_number, p.action_taken, p.notes,
+                        p.quantity, p.unit_cost, p.warranty, p.vendor, p.invoice_number,
+                    )
+                elif not p.delete and p.part_name.strip():
+                    await _insert_part(conn, record_id, p)
+            parts = await conn.fetch(
+                """
+                SELECT id::text, part_name, part_number, action_taken, notes,
+                       quantity, unit_cost, warranty, vendor, invoice_number
+                FROM maintenance_parts_replaced WHERE record_id = $1::uuid
+                ORDER BY created_at, id
+                """,
+                record_id,
+            )
+    return {"id": record_id, "labor_rate": body.labor_rate, "parts": [_part_out(p) for p in parts]}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

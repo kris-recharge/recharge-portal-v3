@@ -665,19 +665,32 @@ async def get_sessions(
             -- EXCEPTION 2 (v3.6): an episode where the charger opened a transaction
             -- that then metered nothing at all.  See the zero-energy guard in
             -- charge_sig and branch (2d) below.
+            -- The in-range Preparings, each with the status it followed. This was
+            -- a LAG() over every StatusNotification ever stored, filtered to the
+            -- range afterwards — the whole history on every page load (~10 s at
+            -- 80k rows, growing forever). Looking up only each Preparing's
+            -- predecessor gives the same prev_status from one index probe each.
+            -- Keep the ORDER BY to received_at alone: a tie-break column stops
+            -- the index from answering LIMIT 1 and costs more than the old LAG.
             sn AS (
                 SELECT
-                    asset_id,
-                    connector_id,
-                    received_at,
-                    action_payload->>'status'                        AS status,
-                    LAG(action_payload->>'status') OVER (
-                        PARTITION BY asset_id, connector_id ORDER BY received_at
-                    )                                                AS prev_status
-                FROM ocpp_events
-                WHERE asset_id = ANY($1::text[])
-                  AND action = 'StatusNotification'
-                  AND action_payload->>'status' IS NOT NULL
+                    e.asset_id,
+                    e.connector_id,
+                    e.received_at,
+                    e.action_payload->>'status'                      AS status,
+                    (SELECT p.action_payload->>'status' FROM ocpp_events p
+                      WHERE p.asset_id = e.asset_id
+                        AND p.action = 'StatusNotification'
+                        AND p.connector_id IS NOT DISTINCT FROM e.connector_id
+                        AND p.action_payload->>'status' IS NOT NULL
+                        AND p.received_at < e.received_at
+                      ORDER BY p.received_at DESC LIMIT 1)          AS prev_status
+                FROM ocpp_events e
+                WHERE e.asset_id = ANY($1::text[])
+                  AND e.action = 'StatusNotification'
+                  AND e.action_payload->>'status' = 'Preparing'
+                  AND ($2::timestamptz IS NULL OR e.received_at >= $2)
+                  AND ($3::timestamptz IS NULL OR e.received_at <= $3)
             ),
             charge_sig AS (   -- any signal that a transaction actually began
                                 -- AND delivered something
@@ -708,7 +721,9 @@ async def get_sessions(
                         COALESCE((SELECT MIN(a.received_at) FROM avail a
                                   WHERE a.asset_id = s.asset_id
                                     AND a.connector_id IS NOT DISTINCT FROM s.connector_id
-                                    AND a.received_at > s.received_at),
+                                    AND a.received_at > s.received_at
+                                    -- Past the cap LEAST() ignores it anyway.
+                                    AND a.received_at <= s.received_at + INTERVAL '2 hours'),
                                  'infinity'::timestamptz)
                     )                                            AS episode_end
                 FROM sn s

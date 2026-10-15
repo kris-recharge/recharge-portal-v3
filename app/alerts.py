@@ -325,29 +325,38 @@ def _check_offline_idle(conn) -> None:
     allowed = get_all_station_ids()
 
     with conn.cursor() as cur:
-        # Latest signal from OCPP events per asset
+        # Latest signal from OCPP events per asset. One index probe per
+        # charger; DISTINCT ON walked every event stored, every minute.
         cur.execute(
             """
-            SELECT DISTINCT ON (asset_id)
-                asset_id,
-                received_at,
-                action,
-                connection_id
-            FROM ocpp_events
-            WHERE asset_id = ANY(%s)
-            ORDER BY asset_id, received_at DESC
+            SELECT a.asset_id, e.received_at, e.action, e.connection_id
+            FROM unnest(%s::text[]) AS a(asset_id)
+            CROSS JOIN LATERAL (
+                SELECT received_at, action, connection_id
+                FROM ocpp_events
+                WHERE asset_id = a.asset_id
+                ORDER BY received_at DESC
+                LIMIT 1
+            ) e
             """,
             (allowed,),
         )
         ocpp_rows = {r[0]: r for r in cur.fetchall()}
 
-        # Latest meter value timestamp per asset (active sessions only)
+        # Latest meter value timestamp per asset (active sessions only), via
+        # ix_meter_values_parsed_station_received.
         cur.execute(
             """
-            SELECT station_id, MAX(received_at) AS last_mv
-            FROM meter_values_parsed
-            WHERE station_id = ANY(%s)
-            GROUP BY station_id
+            SELECT a.asset_id, m.last_mv
+            FROM unnest(%s::text[]) AS a(asset_id)
+            CROSS JOIN LATERAL (
+                SELECT received_at AS last_mv
+                FROM meter_values_parsed
+                WHERE station_id = a.asset_id
+                  AND received_at IS NOT NULL
+                ORDER BY received_at DESC
+                LIMIT 1
+            ) m
             """,
             (allowed,),
         )

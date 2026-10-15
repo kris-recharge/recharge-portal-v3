@@ -49,28 +49,37 @@ async def get_connectivity(user: CurrentUser):
     now_utc = datetime.now(tz=timezone.utc)
 
     async with acquire() as conn:
-        # Latest OCPP event per charger (for action label + connection_id)
+        # Latest OCPP event per charger (for action label + connection_id).
+        # One index probe per charger; DISTINCT ON walked every event stored.
         ocpp_rows = await conn.fetch(
             """
-            SELECT DISTINCT ON (asset_id)
-                asset_id,
-                received_at,
-                action,
-                connection_id
-            FROM ocpp_events
-            WHERE asset_id = ANY($1::text[])
-            ORDER BY asset_id, received_at DESC
+            SELECT a.asset_id, e.received_at, e.action, e.connection_id
+            FROM unnest($1::text[]) AS a(asset_id)
+            CROSS JOIN LATERAL (
+                SELECT received_at, action, connection_id
+                FROM ocpp_events
+                WHERE asset_id = a.asset_id
+                ORDER BY received_at DESC
+                LIMIT 1
+            ) e
             """,
             allowed,
         )
 
-        # Latest meter value timestamp per charger (active sessions)
+        # Latest meter value timestamp per charger (active sessions), via
+        # ix_meter_values_parsed_station_received.
         mv_rows = await conn.fetch(
             """
-            SELECT station_id AS asset_id, MAX(received_at) AS last_mv
-            FROM meter_values_parsed
-            WHERE station_id = ANY($1::text[])
-            GROUP BY station_id
+            SELECT a.asset_id, m.last_mv
+            FROM unnest($1::text[]) AS a(asset_id)
+            CROSS JOIN LATERAL (
+                SELECT received_at AS last_mv
+                FROM meter_values_parsed
+                WHERE station_id = a.asset_id
+                  AND received_at IS NOT NULL
+                ORDER BY received_at DESC
+                LIMIT 1
+            ) m
             """,
             allowed,
         )

@@ -299,19 +299,28 @@ async def export_sessions(
             -- in and never got authorized.
             -- EXCEPTION 2 (v3.6): an episode where the charger opened a transaction
             -- that then metered nothing. See ZERO_ENERGY_TX_SQL in sessions.py.
+            -- The in-range Preparings, each with the status it followed — see
+            -- the same CTE in sessions.py for why this isn't a LAG() over all
+            -- history.
             sn AS (
                 SELECT
-                    asset_id,
-                    connector_id,
-                    received_at,
-                    action_payload->>'status'                        AS status,
-                    LAG(action_payload->>'status') OVER (
-                        PARTITION BY asset_id, connector_id ORDER BY received_at
-                    )                                                AS prev_status
-                FROM ocpp_events
-                WHERE asset_id = ANY($1::text[])
-                  AND action = 'StatusNotification'
-                  AND action_payload->>'status' IS NOT NULL
+                    e.asset_id,
+                    e.connector_id,
+                    e.received_at,
+                    e.action_payload->>'status'                      AS status,
+                    (SELECT p.action_payload->>'status' FROM ocpp_events p
+                      WHERE p.asset_id = e.asset_id
+                        AND p.action = 'StatusNotification'
+                        AND p.connector_id IS NOT DISTINCT FROM e.connector_id
+                        AND p.action_payload->>'status' IS NOT NULL
+                        AND p.received_at < e.received_at
+                      ORDER BY p.received_at DESC LIMIT 1)          AS prev_status
+                FROM ocpp_events e
+                WHERE e.asset_id = ANY($1::text[])
+                  AND e.action = 'StatusNotification'
+                  AND e.action_payload->>'status' = 'Preparing'
+                  AND e.received_at >= $2
+                  AND e.received_at <= $3
             ),
             charge_sig AS (   -- any signal that a transaction actually began
                                 -- AND delivered something (see ZERO_ENERGY_TX_SQL)
@@ -340,7 +349,9 @@ async def export_sessions(
                         COALESCE((SELECT MIN(a.received_at) FROM avail a
                                   WHERE a.asset_id = s.asset_id
                                     AND a.connector_id IS NOT DISTINCT FROM s.connector_id
-                                    AND a.received_at > s.received_at),
+                                    AND a.received_at > s.received_at
+                                    -- Past the cap LEAST() ignores it anyway.
+                                    AND a.received_at <= s.received_at + INTERVAL '2 hours'),
                                  'infinity'::timestamptz)
                     )                                            AS episode_end
                 FROM sn s

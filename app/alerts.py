@@ -730,24 +730,32 @@ def _check_double_charge(conn) -> None:
             carded AS (
                 SELECT r.station_id, r.connector_id, r.transaction_id, r.start_utc,
                        ct.committed_cents, ct.entry_mode, ct.masked_pan, ct.vendor,
-                       (SELECT o.action_payload->>'idTag'
-                          FROM ocpp_events o
-                         WHERE o.asset_id = r.station_id
-                           AND o.action   = 'StartTransaction'
-                           AND (o.action_payload->>'connectorId')::int = r.connector_id
-                           AND o.received_at BETWEEN r.start_utc - INTERVAL '6 hours'
-                                                 AND r.start_utc + INTERVAL '24 hours'
-                           AND (o.action_payload->>'timestamp')::timestamptz
-                                 BETWEEN r.start_utc - INTERVAL '6 hours'
-                                     AND r.start_utc + INTERVAL '5 minutes'
-                         ORDER BY ABS(EXTRACT(EPOCH FROM (
-                             (o.action_payload->>'timestamp')::timestamptz - r.start_utc))) ASC
-                         LIMIT 1) AS auth_tag
+                       st.id_tag AS auth_tag,
+                       -- v3.7: Authorize windows below are anchored on this, the
+                       -- StartTransaction's server receive time — never on
+                       -- start_utc, which is charger clock. Same fix as
+                       -- START_TX_JOIN_SQL in routers/sessions.py.
+                       COALESCE(st.received_at, r.start_utc) AS anchor_at
                 FROM recent r
                 JOIN card_transactions ct
                   ON ct.station_id     = r.station_id
                  AND ct.connector_id  IS NOT DISTINCT FROM r.connector_id
                  AND ct.transaction_id = r.transaction_id::text
+                LEFT JOIN LATERAL (
+                    SELECT o.action_payload->>'idTag' AS id_tag, o.received_at
+                      FROM ocpp_events o
+                     WHERE o.asset_id = r.station_id
+                       AND o.action   = 'StartTransaction'
+                       AND (o.action_payload->>'connectorId')::int = r.connector_id
+                       AND o.received_at BETWEEN r.start_utc - INTERVAL '6 hours'
+                                             AND r.start_utc + INTERVAL '24 hours'
+                       AND (o.action_payload->>'timestamp')::timestamptz
+                             BETWEEN r.start_utc - INTERVAL '6 hours'
+                                 AND r.start_utc + INTERVAL '5 minutes'
+                     ORDER BY ABS(EXTRACT(EPOCH FROM (
+                         (o.action_payload->>'timestamp')::timestamptz - r.start_utc))) ASC
+                     LIMIT 1
+                ) st ON true
             )
             SELECT c.station_id, c.connector_id, c.transaction_id, c.start_utc,
                    c.committed_cents, c.entry_mode, c.masked_pan, c.vendor,
@@ -755,8 +763,8 @@ def _check_double_charge(conn) -> None:
                       FROM ocpp_events az
                      WHERE az.asset_id = c.station_id
                        AND az.action   = 'Authorize'
-                       AND az.received_at BETWEEN c.start_utc - INTERVAL '10 minutes'
-                                              AND c.start_utc
+                       AND az.received_at BETWEEN c.anchor_at - INTERVAL '10 minutes'
+                                              AND c.anchor_at
                        AND az.action_payload->>'idTag' ~ '^[0-9A-Z]{20}$'
                        AND az.action_payload->>'idTag' IS DISTINCT FROM c.auth_tag
                        AND NOT EXISTS (
@@ -764,8 +772,8 @@ def _check_double_charge(conn) -> None:
                             WHERE sx.asset_id = c.station_id
                               AND sx.action   = 'StartTransaction'
                               AND sx.action_payload->>'idTag' = az.action_payload->>'idTag'
-                              AND sx.received_at BETWEEN c.start_utc - INTERVAL '30 minutes'
-                                                     AND c.start_utc + INTERVAL '30 minutes')
+                              AND sx.received_at BETWEEN c.anchor_at - INTERVAL '30 minutes'
+                                                     AND c.anchor_at + INTERVAL '30 minutes')
                      ORDER BY az.received_at DESC
                      LIMIT 1) AS stranded_tag
             FROM carded c

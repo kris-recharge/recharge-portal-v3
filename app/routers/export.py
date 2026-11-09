@@ -148,35 +148,32 @@ async def export_sessions(
                     -- VID: Authorize on EVERY plug-in, gets rejected unless the
                     -- vehicle is enrolled, then starts the transaction with its
                     -- payment terminal's fixed tag after the card tap.)
-                    -- Match on the charger-stamped payload timestamp, not
-                    -- received_at: an offline charger buffers StartTransaction and
-                    -- replays it minutes later (seen 12 min late on Delta-Right
-                    -- 2026-06-12). The coarse received_at bound keeps the index.
-                    (SELECT oe.action_payload->>'idTag'
-                     FROM ocpp_events oe
-                     WHERE oe.asset_id = s.station_id
-                       AND oe.action   = 'StartTransaction'
-                       AND (oe.action_payload->>'connectorId')::int = s.connector_id
-                       -- Lower bound is 6 h (not minutes): a session straddling
-                       -- the export window's start has start_utc truncated to the
-                       -- window edge, so its StartTransaction fired earlier. The
-                       -- nearest-first ORDER BY still picks the right transaction.
-                       AND oe.received_at BETWEEN s.start_utc - INTERVAL '6 hours'
-                                              AND s.start_utc + INTERVAL '24 hours'
-                       AND (oe.action_payload->>'timestamp')::timestamptz
-                             BETWEEN s.start_utc - INTERVAL '6 hours'
-                                 AND s.start_utc + INTERVAL '5 minutes'
-                     ORDER BY ABS(EXTRACT(EPOCH FROM (
-                         (oe.action_payload->>'timestamp')::timestamptz - s.start_utc))) ASC
-                     LIMIT 1) AS auth_tag,
+                    -- Matched on the charger-stamped payload timestamp (an offline
+                    -- charger replays StartTransaction late — 12 min on
+                    -- Delta-Right 2026-06-12). Shared with sessions.py via
+                    -- START_TX_JOIN_SQL (joined below as `st`).
+                    st.id_tag                           AS auth_tag,
+                    st.received_at                      AS start_received_at,
                     -- VID: only VID:-prefixed tags from ocpp_events Authorize
                     (SELECT oe.action_payload->>'idTag'
                      FROM ocpp_events oe
                      WHERE oe.asset_id = s.station_id
                        AND oe.action   = 'Authorize'
                        AND oe.action_payload->>'idTag' LIKE 'VID:%'
-                       AND oe.received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
-                                              AND s.start_utc + INTERVAL '5 minutes'
+                       -- v3.7: server clock vs server clock — anchored on the
+                       -- StartTransaction's receive time, plus the "not already
+                       -- followed by an earlier StartTransaction on this
+                       -- connector" guard. Mirrors sessions.py; see the comments
+                       -- there and on START_TX_JOIN_SQL.
+                       AND oe.received_at BETWEEN COALESCE(st.received_at, s.start_utc) - INTERVAL '60 minutes'
+                                              AND COALESCE(st.received_at, s.start_utc) + INTERVAL '5 minutes'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM ocpp_events px
+                            WHERE px.asset_id = s.station_id
+                              AND px.action   = 'StartTransaction'
+                              AND (px.action_payload->>'connectorId')::int = s.connector_id
+                              AND px.received_at >  oe.received_at
+                              AND px.received_at <  st.received_at)
                        -- An Authorize carries no connectorId (OCPP 1.6 has no such
                        -- field — 0 of 4087 stored Authorizes have one), so on a
                        -- dual-connector unit the nearest probe in time can belong to
@@ -227,7 +224,8 @@ async def export_sessions(
                                          AND p2.received_at > p.received_at
                                          AND p2.received_at <= oe.received_at
                                          AND p2.action_payload->>'status' <> 'Preparing'))))
-                     ORDER BY ABS(EXTRACT(EPOCH FROM (oe.received_at - s.start_utc))) ASC
+                     ORDER BY ABS(EXTRACT(EPOCH FROM (
+                         oe.received_at - COALESCE(st.received_at, s.start_utc)))) ASC
                      LIMIT 1) AS vid_tag,
                     ep.price_per_kwh,
                     ep.connection_fee,
@@ -242,6 +240,7 @@ async def export_sessions(
                     -- that drew no energy), and that must still classify as CC.
                     (card.vendor IS NOT NULL)           AS card_matched
                 FROM sessions s
+                /*START_TX_JOIN*/
                 LEFT JOIN LATERAL (
                     SELECT price_per_kwh, connection_fee
                     FROM evse_pricing

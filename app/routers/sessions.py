@@ -118,10 +118,15 @@ def _vid_tag(start_tag: str, authorize_vid: str | None) -> str | None:
     2026-09-01 — Authentication read "AutoCharge" while the VID column sat
     empty). The units still probe-then-fall-back for unenrolled vehicles, so
     both paths stay live on the same charger.
+
+    v3.7 — uppercased. ABB and Alpitronic send the hex uppercase, Tritium and
+    Autel lowercase; it is the same vehicle either way (Kris's car reads
+    VID:AC965B5BE769 at CEA HQ and VID:ac965b5be769 at ARG), so one spelling
+    lets a VID be searched and compared across the estate.
     """
     if start_tag.startswith("VID:"):
-        return start_tag
-    return authorize_vid or None
+        return start_tag.upper()
+    return authorize_vid.upper() if authorize_vid else None
 
 
 def _resolve_soc(
@@ -333,8 +338,11 @@ DOUBLE_CHARGE_SQL = """
                         SELECT 1 FROM ocpp_events az
                          WHERE az.asset_id = with_auth.station_id
                            AND az.action   = 'Authorize'
-                           AND az.received_at BETWEEN with_auth.start_utc - INTERVAL '10 minutes'
-                                                  AND with_auth.start_utc
+                           -- Server clock on both sides — see START_TX_JOIN_SQL.
+                           AND az.received_at
+                                 BETWEEN COALESCE(with_auth.start_received_at, with_auth.start_utc)
+                                           - INTERVAL '10 minutes'
+                                     AND COALESCE(with_auth.start_received_at, with_auth.start_utc)
                            AND az.action_payload->>'idTag' ~ '^[0-9A-Z]{20}$'
                            AND az.action_payload->>'idTag' IS DISTINCT FROM with_auth.auth_tag
                            AND NOT EXISTS (
@@ -344,8 +352,53 @@ DOUBLE_CHARGE_SQL = """
                                   AND sx.action_payload->>'idTag'
                                         = az.action_payload->>'idTag'
                                   AND sx.received_at
-                                        BETWEEN with_auth.start_utc - INTERVAL '30 minutes'
-                                            AND with_auth.start_utc + INTERVAL '30 minutes')))
+                                        BETWEEN COALESCE(with_auth.start_received_at, with_auth.start_utc)
+                                                  - INTERVAL '30 minutes'
+                                            AND COALESCE(with_auth.start_received_at, with_auth.start_utc)
+                                                  + INTERVAL '30 minutes')))
+"""
+
+
+# v3.7 — the session's own StartTransaction, found ONCE per session and joined
+# as `st`. Supplies the Authentication idTag (st.id_tag → auth_tag) and, new,
+# the server-side receive time (st.received_at) that every Authorize lookup is
+# anchored on.
+#
+# Two clocks are in play and must never be compared with each other:
+#   * charger clock — meter_values_parsed.ts (so s.start_utc) and the
+#     StartTransaction payload timestamp;
+#   * server clock  — ocpp_events.received_at.
+# Matching the StartTransaction to the session is charger-vs-charger (payload
+# timestamp vs s.start_utc), which survives a unit replaying its buffer late.
+# Matching an Authorize to the session must be server-vs-server, i.e. against
+# st.received_at. Until v3.7 the VID lookup compared Authorize.received_at with
+# s.start_utc, which is right only while delivery lag is ~0. On 2026-11-09 the
+# webhook ran 7-34 min behind on CEA HQ, ARG and Delta: the window looked in the
+# wrong place, so sessions either went blank or took the PREVIOUS driver's VID
+# (CEA HQ 13:01, VID:90E6432CDCCD shown, VID:AC965B5BE769 actually sent).
+# COALESCE back to s.start_utc only for a session whose StartTransaction never
+# reached us.
+START_TX_JOIN_SQL = """
+                LEFT JOIN LATERAL (
+                    SELECT o.action_payload->>'idTag' AS id_tag,
+                           o.received_at
+                      FROM ocpp_events o
+                     WHERE o.asset_id = s.station_id
+                       AND o.action   = 'StartTransaction'
+                       AND (o.action_payload->>'connectorId')::int = s.connector_id
+                       -- Coarse received_at bound keeps the index usable. Lower
+                       -- bound is 6 h: a session straddling a query window's start
+                       -- has start_utc truncated to the edge, so its
+                       -- StartTransaction fired earlier.
+                       AND o.received_at BETWEEN s.start_utc - INTERVAL '6 hours'
+                                             AND s.start_utc + INTERVAL '24 hours'
+                       AND (o.action_payload->>'timestamp')::timestamptz
+                             BETWEEN s.start_utc - INTERVAL '6 hours'
+                                 AND s.start_utc + INTERVAL '5 minutes'
+                     ORDER BY ABS(EXTRACT(EPOCH FROM (
+                         (o.action_payload->>'timestamp')::timestamptz - s.start_utc))) ASC
+                     LIMIT 1
+                ) st ON true
 """
 
 
@@ -405,6 +458,7 @@ def _expand(sql: str) -> str:
            .replace("/*ENERGY_COALESCE*/", SESSION_ENERGY_COALESCE_SQL)
            .replace("/*DOUBLE_CHARGE*/",   DOUBLE_CHARGE_SQL)
            .replace("/*ZERO_ENERGY_TX*/",  ZERO_ENERGY_TX_SQL)
+           .replace("/*START_TX_JOIN*/",   START_TX_JOIN_SQL)
     )
 
 
@@ -511,8 +565,23 @@ async def get_sessions(
                      WHERE o.asset_id = s.station_id
                        AND o.action = 'Authorize'
                        AND o.action_payload->>'idTag' LIKE 'VID:%'
-                       AND o.received_at BETWEEN s.start_utc - INTERVAL '60 minutes'
-                                             AND s.start_utc + INTERVAL '5 minutes'
+                       -- v3.7: anchored on the StartTransaction's receive time,
+                       -- not s.start_utc — server clock vs server clock. See
+                       -- START_TX_JOIN_SQL.
+                       AND o.received_at BETWEEN COALESCE(st.received_at, s.start_utc) - INTERVAL '60 minutes'
+                                             AND COALESCE(st.received_at, s.start_utc) + INTERVAL '5 minutes'
+                       -- v3.7: a probe that an EARLIER StartTransaction on this
+                       -- connector already followed belongs to that earlier
+                       -- session. Without this the 60-min lookback hands a VID to
+                       -- the next driver after a re-plug (CEA HQ 2026-11-09 12:09
+                       -- would show the 11:58 car's VID:90E6432CDCCD).
+                       AND NOT EXISTS (
+                           SELECT 1 FROM ocpp_events px
+                            WHERE px.asset_id = s.station_id
+                              AND px.action   = 'StartTransaction'
+                              AND (px.action_payload->>'connectorId')::int = s.connector_id
+                              AND px.received_at >  o.received_at
+                              AND px.received_at <  st.received_at)
                        -- An Authorize carries no connectorId (OCPP 1.6 has no such
                        -- field — 0 of 4087 stored Authorizes have one), so on a
                        -- dual-connector unit the nearest probe in time can belong to
@@ -570,25 +639,14 @@ async def get_sessions(
                                          AND p2.received_at > p.received_at
                                          AND p2.received_at <= o.received_at
                                          AND p2.action_payload->>'status' <> 'Preparing'))))
-                     ORDER BY ABS(EXTRACT(EPOCH FROM (o.received_at - s.start_utc))) ASC
+                     ORDER BY ABS(EXTRACT(EPOCH FROM (
+                         o.received_at - COALESCE(st.received_at, s.start_utc)))) ASC
                      LIMIT 1) AS id_tag,
                     -- v3.3: the idTag that actually STARTED the transaction, for the
-                    -- Authentication column. Mirrors export.py's with_auth exactly —
-                    -- charger-stamped payload timestamp for the nearest-match (an
-                    -- offline unit replays StartTransaction minutes late), with the
-                    -- coarse received_at bound left in to keep the index usable.
-                    (SELECT o.action_payload->>'idTag' FROM ocpp_events o
-                     WHERE o.asset_id = s.station_id
-                       AND o.action   = 'StartTransaction'
-                       AND (o.action_payload->>'connectorId')::int = s.connector_id
-                       AND o.received_at BETWEEN s.start_utc - INTERVAL '6 hours'
-                                             AND s.start_utc + INTERVAL '24 hours'
-                       AND (o.action_payload->>'timestamp')::timestamptz
-                             BETWEEN s.start_utc - INTERVAL '6 hours'
-                                 AND s.start_utc + INTERVAL '5 minutes'
-                     ORDER BY ABS(EXTRACT(EPOCH FROM (
-                         (o.action_payload->>'timestamp')::timestamptz - s.start_utc))) ASC
-                     LIMIT 1) AS auth_tag,
+                    -- Authentication column. Shared with export.py via
+                    -- START_TX_JOIN_SQL (joined below as `st`).
+                    st.id_tag                                  AS auth_tag,
+                    st.received_at                             AS start_received_at,
                     (SELECT ep.price_per_kwh FROM evse_pricing ep
                      WHERE ep.station_id = s.station_id
                        AND ep.effective_start <= s.start_utc
@@ -613,6 +671,7 @@ async def get_sessions(
                     -- classify as CC.
                     (card.vendor IS NOT NULL)                  AS card_matched
                 FROM sessions s
+                /*START_TX_JOIN*/
                 LEFT JOIN LATERAL (
                     SELECT ct.vendor, ct.committed_cents, ct.entry_mode
                     FROM card_transactions ct

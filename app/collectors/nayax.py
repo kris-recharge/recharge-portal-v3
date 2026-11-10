@@ -249,6 +249,44 @@ async def _handle_captchas(page, http: httpx.AsyncClient) -> None:
 
 # ── Login ─────────────────────────────────────────────────────────────────────
 
+async def _login_failure_detail(page) -> str:
+    """Say what the portal is actually showing when a login step times out.
+
+    Added 2026-11-09 after the collector failed silently for 12 days (from
+    2026-10-28) with only "TOTP field never appeared", which can't tell a
+    rejected password from a CAPTCHA from a new interstitial (password expiry,
+    terms, MFA-method picker). Returns the URL plus any VISIBLE error/alert
+    text, and saves a screenshot beside the session file so it can be pulled
+    off the VPS with `docker cp`. Reads innerText only, so input values (the
+    password) never reach the log. Never raises — diagnostics must not mask
+    the original failure.
+    """
+    try:
+        shot = STATE_PATH.parent / "nayax_login_fail.png"
+        shot.parent.mkdir(parents=True, exist_ok=True)
+        await page.screenshot(path=str(shot), full_page=True)
+    except Exception:
+        shot = None
+    try:
+        text = await page.evaluate(
+            """() => {
+                const seen = new Set(), out = [];
+                const sel = '[class*="error" i],[id*="error" i],[class*="alert" i],'
+                          + '[class*="warning" i],[class*="message" i],[id*="msg" i],'
+                          + '[role="alert"],h1,h2,h3';
+                for (const el of document.querySelectorAll(sel)) {
+                    if (!el.offsetParent) continue;
+                    const t = (el.innerText || '').trim().replace(/\\s+/g, ' ');
+                    if (t && t.length < 300 && !seen.has(t)) { seen.add(t); out.push(t); }
+                }
+                return out.slice(0, 8).join(' | ');
+            }"""
+        )
+    except Exception:
+        text = "(could not read page)"
+    return f"url={page.url} text={text or '(no visible message)'} screenshot={shot}"
+
+
 async def _login(cred: dict, headless: bool = True) -> list[dict]:
     """Drive a full interactive login and return the resulting cookies.
 
@@ -303,10 +341,11 @@ async def _login(cred: dict, headless: bool = True) -> list[dict]:
                     "#second_factor_option_totp_input", state="visible", timeout=45_000
                 )
             except Exception:
+                detail = await _login_failure_detail(page)
                 await browser.close()
                 raise RuntimeError(
-                    "TOTP field never appeared — login likely failed before MFA "
-                    "(bad password, or an unsolved CAPTCHA)."
+                    "TOTP field never appeared — login failed before MFA. "
+                    f"Page said: {detail}"
                 )
 
             # Don't submit a code that's about to roll over; a rejected code
@@ -328,8 +367,11 @@ async def _login(cred: dict, headless: bool = True) -> list[dict]:
             try:
                 await page.wait_for_url(re.compile(r"/core/public/"), timeout=45_000)
             except Exception:
+                detail = await _login_failure_detail(page)
                 await browser.close()
-                raise RuntimeError("Login did not reach an authenticated page")
+                raise RuntimeError(
+                    f"Login did not reach an authenticated page. Page said: {detail}"
+                )
 
             cookies = await context.cookies()
             await browser.close()

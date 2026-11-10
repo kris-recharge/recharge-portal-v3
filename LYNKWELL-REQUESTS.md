@@ -1,7 +1,7 @@
 # Requests to LynkWell — raised 2026-09-08
 
-Five items. Two are refunds, three are platform changes on LynkWell's side that
-we cannot make ourselves. Everything here was verified against our own
+Eight items (#8 added 2026-10-14). Two are refunds; the rest are platform
+changes or questions on LynkWell's side that we cannot resolve ourselves. Everything here was verified against our own
 `ocpp_events` / `card_transactions` tables and LynkWell's session exports for
 August 2026; transaction IDs are LynkWell's own.
 
@@ -167,3 +167,48 @@ greater than or equal to ours on all 445 matched August sessions and never once
 lower, and the two agree exactly wherever the charger samples at transaction open
 and close. But that is inference. A one-line confirmation lets us stop treating
 it as an assumption.
+
+---
+
+## 8. Tell us who started a remote-start session (added 2026-10-14)
+
+Since 14 October the Nayax reader at CEA HQ (`as_XSkQjOq7au3vVKH4AtEBs`, ABB
+Terra184, Nayax device `4434333124290194`) no longer authorises locally against
+the charger. A tap now goes Nayax → LynkWell → `RemoteStartTransaction`, and the
+charger opens the transaction with a fresh LynkWell-minted idTag, just as it does
+for an app start. Our first three card sessions:
+
+| Nayax tap (UTC) | Settled | Transaction ID | StartTransaction idTag |
+|---|---|---|---|
+| 20:53:33 | $9.53 | 1198800 | `XRUEG5OI1IA78RHRCKA3` |
+| 20:56:48 | $0.68 | 1198813 | `HAEG7DOJ89AJVNQ2H0YY` |
+| 21:00:55 | $1.89 | 1198826 | `NFNKMLI2FPJ65VTKK7KV` |
+
+App sessions on the same charger the day before (e.g. 1197402,
+`JYAXN6S68XJ3E5G6DGYF`) look identical: a 20-character A-Z/0-9 tag with no
+`Authorize` carrying it. Neither shows up in `ocpp_events`, and the stop reason
+doesn't separate them either. The Payter Apollos at Cooper Landing behave the
+same way in Cloud mode.
+
+Today we only tell them apart by matching the settled Nayax transaction to the
+session on charger and time (a tap 27–30 s before the StartTransaction). That
+works, but if a match is missed the session reads as **App**, not as
+unknown. A collector outage, a terminal swap, or a late-settling transaction
+would quietly move card revenue into the app bucket. CEA HQ also runs both
+connectors off one terminal, so the time match can be fooled when the other
+connector starts at about the same moment.
+
+**Request:** for each session, expose what initiated the remote start: app user,
+payment terminal (with its device ID), or other. Any of these would do, in order
+of preference:
+
+1. A start-source field on the session in the webhook feed, keyed by
+   `transactionId`.
+2. The same field on the session export / API.
+3. The vendor's payment transaction ID (Nayax transaction ID, Payter session
+   ID) stored against the LynkWell session, which would let us join on a key
+   instead of on time.
+
+**Question:** is the idTag LynkWell mints for a terminal-initiated start drawn
+from the same generator as app tokens? If terminal starts used a distinct
+prefix or format, that alone would let us classify from the StartTransaction.

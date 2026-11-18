@@ -897,19 +897,31 @@ def _check_pm_due(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            WITH last_pm AS (
+            -- A higher-tier PM includes every lower-tier inspection, so it
+            -- also restarts the lower-tier clocks (Annual → Semi-Annual →
+            -- Quarterly). Must match the cascade in routers/maintenance.py.
+            WITH by_tier AS (
                 SELECT
                     charger_id,
                     MAX(CASE WHEN record_type = 'pm_quarterly'
-                             THEN record_timestamp END)                    AS last_q,
+                             THEN record_timestamp END)                    AS q,
                     MAX(CASE WHEN record_type = 'pm_semi_annual'
-                             THEN record_timestamp END)                    AS last_sa,
+                             THEN record_timestamp END)                    AS sa,
                     MAX(CASE WHEN record_type IN ('pm_annual', 'pm_general')
-                             THEN record_timestamp END)                    AS last_a
+                             THEN record_timestamp END)                    AS a
                 FROM maintenance_records
                 WHERE record_type IN
                       ('pm_quarterly','pm_semi_annual','pm_annual','pm_general')
                 GROUP BY charger_id
+            ),
+            last_pm AS (
+                -- GREATEST ignores NULLs in Postgres
+                SELECT
+                    charger_id,
+                    GREATEST(q, sa, a) AS last_q,
+                    GREATEST(sa, a)    AS last_sa,
+                    a                  AS last_a
+                FROM by_tier
             )
             SELECT
                 c.id::text                        AS charger_id,

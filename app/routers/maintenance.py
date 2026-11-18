@@ -330,9 +330,17 @@ async def maintenance_overview(
                 return None  # Never had a PM — no calculated due date
             return _add_months(_ak_date(last_ts), months).isoformat()
 
-        last_q  = pm_data.get("pm_quarterly")
-        last_sa = pm_data.get("pm_semi_annual")
-        last_a  = pm_data.get("pm_annual") or pm_data.get("pm_general")
+        # A higher-tier PM includes every lower-tier inspection, so it also
+        # completes (and restarts the clock for) the lower tiers:
+        #   Annual      → resets Annual, Semi-Annual, Quarterly
+        #   Semi-Annual → resets Semi-Annual, Quarterly
+        def _latest(*ts):
+            vals = [t for t in ts if t is not None]
+            return max(vals) if vals else None
+
+        last_a  = _latest(pm_data.get("pm_annual"), pm_data.get("pm_general"))
+        last_sa = _latest(pm_data.get("pm_semi_annual"), last_a)
+        last_q  = _latest(pm_data.get("pm_quarterly"), last_sa)
 
         next_q  = _next_due(last_q,  q_months)
         next_sa = _next_due(last_sa, sa_months)

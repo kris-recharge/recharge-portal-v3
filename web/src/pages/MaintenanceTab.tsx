@@ -218,8 +218,9 @@ function UnitCard({ unit, onClick }: { unit: MaintenanceUnit; onClick: () => voi
         <div>
           <div className="text-gray-400 mb-0.5">Last PM</div>
           <div className="text-gray-600">
-            {unit.last_pm_annual ?? unit.last_pm_semi_annual ?? unit.last_pm_quarterly
-              ? fmtDate(unit.last_pm_annual ?? unit.last_pm_semi_annual ?? unit.last_pm_quarterly)
+            {/* last_pm_quarterly is cascaded server-side, so it is the most recent PM of any tier */}
+            {unit.last_pm_quarterly ?? unit.last_pm_semi_annual ?? unit.last_pm_annual
+              ? fmtDate(unit.last_pm_quarterly ?? unit.last_pm_semi_annual ?? unit.last_pm_annual)
               : 'None recorded'}
           </div>
         </div>

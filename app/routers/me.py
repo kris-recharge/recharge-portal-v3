@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from ..auth import CurrentUser, filter_evse_ids
+from ..auth import CurrentUser, filter_evse_ids, is_staff
 from ..config import DEV_BYPASS_AUTH
 from ..constants import (
     display_name,
@@ -28,6 +28,9 @@ async def get_me(user: CurrentUser):
         "email": user.email,
         "name": user.name,
         "is_admin": is_admin,
+        # Any @rechargealaska.net account: sees Admin → Deadlines (and only
+        # that part of Admin unless also is_admin).
+        "is_staff": is_admin or is_staff(user.email),
         # Admins implicitly can submit; otherwise honor the per-user flag.
         "can_submit_pm": is_admin or user.can_submit_pm,
         "allowed_evse_ids": user.allowed_evse_ids,

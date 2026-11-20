@@ -56,6 +56,10 @@ if not PUSH_ENABLED:
 else:
     _log.warning("Web Push enabled (VAPID key %s…).", VAPID_PUBLIC_KEY[:12])
 
+# ── Deadline alerts ───────────────────────────────────────────────────────────
+# Public URL of the dashboard, for "Open in dashboard" links in alert emails.
+PORTAL_URL = os.getenv("PORTAL_URL", "https://www.rechargealaska.net/app").strip().rstrip("/")
+
 # ── App ───────────────────────────────────────────────────────────────────────
 APP_MODE        = os.getenv("APP_MODE", "web").lower()
 # APP_ENV defaults to "production" so the safe behaviour (real auth) is the

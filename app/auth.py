@@ -297,6 +297,18 @@ async def get_current_user(
     return portal_user
 
 
+# ── ReCharge staff ────────────────────────────────────────────────────────────
+# Internal-only features (Admin → Deadlines) are for ReCharge's own people, not
+# external dashboard users like AEA. The email has been proven by Supabase OTP,
+# so the domain is a sound test. The "@" is part of the suffix on purpose: it
+# rejects look-alikes such as x@notrechargealaska.net or x@sub.rechargealaska.net.
+STAFF_EMAIL_SUFFIX = "@rechargealaska.net"
+
+
+def is_staff(email: str | None) -> bool:
+    return bool(email) and email.strip().lower().endswith(STAFF_EMAIL_SUFFIX)
+
+
 def filter_evse_ids(all_ids: list[str], allowed: list[str] | None) -> list[str]:
     """Apply EVSE allowlist. None = no restriction. [] = deny all."""
     if allowed is None:

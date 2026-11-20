@@ -36,12 +36,12 @@ SUPABASE_URL=https://tgnolprmusnapfuydubt.supabase.co
 SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 SUPABASE_SERVICE_ROLE_KEY=<GET FROM SUPABASE DASHBOARD → Settings → API>
 DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-1-us-east-2.pooler.supabase.com:5432/postgres
-SMTP_HOST=smtp.office365.com
+SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=info@rechargealaska.net
-SMTP_PASSWORD=<M365 app password>
-ALERT_EMAIL_TO=info@rechargealaska.net
-ALERT_EMAIL_FROM=info@rechargealaska.net
+SMTP_USER=rechargealaska@gmail.com
+SMTP_PASSWORD=<Gmail app password>
+ALERT_EMAIL_TO=kris.hall@rechargealaska.net
+ALERT_EMAIL_FROM=rechargealaska@gmail.com
 APP_MODE=web
 APP_ENV=production
 SECRET_KEY=<run: openssl rand -hex 32>
@@ -197,4 +197,24 @@ git pull
 docker compose build --build-arg VITE_SUPABASE_URL=... --build-arg VITE_SUPABASE_ANON_KEY=...
 docker compose up -d
 # Re-copy frontend dist if changed (step 5 above)
+```
+
+### Hand-applied migrations (`app/migrations/*.sql`)
+Files in `app/migrations/` are NOT run by the API at startup (only `_MIGRATION_SQL`
+in `main.py` is). Apply each one once, by hand, after review, and **before**
+deploying code that depends on it, e.g. in the Supabase SQL editor, or:
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f app/migrations/20261120_admin_deadlines.sql
+```
+`20261120_admin_deadlines.sql` creates the Admin → Deadlines tables. Until it is
+applied, the Deadlines section shows "Couldn't load deadlines" (the rest of the
+portal is unaffected).
+
+## Tests
+```bash
+pip install pytest psycopg[binary]
+pytest tests                       # pure date logic only
+# Full API tests need a throwaway Postgres (never Supabase):
+docker run -d --rm --name rca_test -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:16
+TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres pytest tests
 ```

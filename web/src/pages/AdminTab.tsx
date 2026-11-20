@@ -1,6 +1,7 @@
 /**
- * Admin tab — EVSE & Locations · Users · Pricing
- * Only rendered for kris.hall@rechargealaska.net (enforced in App.tsx + backend).
+ * Admin tab — Deadlines · EVSE & Locations · Users · Pricing · …
+ * Full tab: kris.hall@rechargealaska.net only. Other @rechargealaska.net staff
+ * see the Deadlines section alone. Both enforced again by the backend.
  */
 
 import { useState } from 'react'
@@ -20,6 +21,7 @@ import {
   type UtilityAccount, type UtilityCredential, type UtilityName,
   type FleetUnitType, type MaintenanceUnit, type Site,
 } from '../lib/api'
+import { DeadlinesSection } from './DeadlinesSection'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const CONNECTOR_OPTIONS = ['CHAdeMO', 'NACS', 'CCS']
@@ -1496,14 +1498,30 @@ function ActiveFleetSection() {
 // Main export
 // ════════════════════════════════════════════════════════════════════════════════
 
-export function AdminTab() {
+export function AdminTab({ isAdmin }: { isAdmin: boolean }) {
+  // ReCharge staff who aren't the portal admin see Deadlines only; the other
+  // sections' APIs would 403 for them anyway.
+  if (!isAdmin) {
+    return (
+      <div className="space-y-4 max-w-5xl">
+        <Section title="Deadlines">
+          <DeadlinesSection />
+        </Section>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4 max-w-5xl">
       <p className="text-xs text-gray-400">
         Admin panel — all changes (EVSEs, users, pricing) write directly to Supabase.
       </p>
 
-      <Section title="EVSE & Locations">
+      <Section title="Deadlines">
+        <DeadlinesSection />
+      </Section>
+
+      <Section title="EVSE & Locations" defaultOpen={false}>
         <EvseSection />
       </Section>
 

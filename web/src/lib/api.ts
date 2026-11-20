@@ -338,6 +338,7 @@ export function buildMaintenanceExportUrl(params: {
 // ── Alerts Config & History ────────────────────────────────────────────────
 
 export type AlertType = 'offline_idle' | 'offline_mid_session' | 'fault' | 'suspicious_vid' | 'pm_due_14d' | 'pm_overdue'
+  | 'deadlines'  // ReCharge staff only — the server leaves it out for everyone else
 
 export interface AlertSubscription {
   alert_type: AlertType
@@ -441,6 +442,8 @@ export interface Me {
   email: string
   name: string
   is_admin: boolean
+  /** Any @rechargealaska.net account — sees Admin → Deadlines. */
+  is_staff: boolean
   can_submit_pm: boolean
   allowed_evse_ids: string[] | null
 }
@@ -953,3 +956,91 @@ export const patchFleetUnit = (
   }>,
 ) =>
   apiFetch(`/api/admin/fleet/units/${chargerId}`, { method: 'PATCH', body: JSON.stringify(body) })
+
+// ── Admin → Deadlines (ReCharge staff only) ───────────────────────────────────
+
+export type DeadlineCategory =
+  'payable' | 'state_filing' | 'tax' | 'insurance' | 'permit' | 'grant' | 'maintenance' | 'other'
+export type DeadlineRecurrence = 'none' | 'monthly' | 'quarterly' | 'yearly' | 'biennial'
+export type DeadlineStatus = 'open' | 'scheduled' | 'done' | 'cancelled'
+export type DeadlineUrgency = 'overdue' | 'critical' | 'soon' | 'later'
+
+export interface Deadline {
+  id: string
+  series_id: string
+  title: string
+  category: DeadlineCategory
+  vendor: string | null
+  amount: number | null
+  due_date: string            // YYYY-MM-DD, an Anchorage calendar date
+  notes: string | null
+  link_url: string | null
+  document_url: string | null   // invoice file, e.g. a OneDrive share link
+  external_ref: string | null
+  status: DeadlineStatus
+  scheduled_on: string | null
+  completed_at: string | null
+  snoozed_until: string | null
+  recurrence: DeadlineRecurrence
+  alert_offsets: number[]
+  source: 'manual' | 'email_ingest' | 'recurrence'
+  created_by: string | null
+  /** Business days in transit (7 for a Wells Fargo mailed check, 0 if paid online). */
+  lead_business_days: number
+  /** When it must be DONE: the mail-by date for a check, else the due date. */
+  action_date: string
+  days_remaining: number      // to action_date, against today in Anchorage
+  days_to_due: number
+  urgency: DeadlineUrgency
+  /** A scheduled check: when it should land, and whether that's after the due date. */
+  expected_arrival: string | null
+  arrives_late: boolean
+}
+
+export interface DeadlinesResponse {
+  today: string
+  items: Deadline[]
+}
+
+export interface DeadlineInput {
+  title: string
+  category: DeadlineCategory
+  vendor: string | null
+  amount: number | null
+  due_date: string
+  notes: string | null
+  link_url: string | null
+  document_url: string | null
+  external_ref: string | null
+  recurrence: DeadlineRecurrence
+  alert_offsets: number[]
+  lead_business_days: number
+}
+
+export function fetchDeadlines(statuses: DeadlineStatus[], category?: DeadlineCategory | null) {
+  const qs = new URLSearchParams({ status: statuses.join(',') })
+  if (category) qs.set('category', category)
+  return apiFetch<DeadlinesResponse>(`/api/admin/deadlines?${qs}`)
+}
+
+export const createDeadline = (body: DeadlineInput) =>
+  apiFetch<Deadline>('/api/admin/deadlines', { method: 'POST', body: JSON.stringify(body) })
+
+export const updateDeadline = (id: string, body: Partial<DeadlineInput> & { status?: 'open' }) =>
+  apiFetch<Deadline>(`/api/admin/deadlines/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+
+export const completeDeadline = (id: string) =>
+  apiFetch<{ item: Deadline; next: Deadline | null }>(`/api/admin/deadlines/${id}/complete`, { method: 'POST' })
+
+export const scheduleDeadline = (id: string, scheduled_on: string) =>
+  apiFetch<Deadline>(`/api/admin/deadlines/${id}/schedule`, {
+    method: 'POST', body: JSON.stringify({ scheduled_on }),
+  })
+
+export const snoozeDeadline = (id: string, until: string | null) =>
+  apiFetch<Deadline>(`/api/admin/deadlines/${id}/snooze`, {
+    method: 'POST', body: JSON.stringify({ until }),
+  })
+
+export const cancelDeadline = (id: string) =>
+  apiFetch<Deadline>(`/api/admin/deadlines/${id}`, { method: 'DELETE' })

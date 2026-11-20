@@ -1,7 +1,8 @@
 /**
  * Main app shell — tab navigation + auth guard.
  * Tabs: Charging Sessions | Status History | Connectivity | Data Export | Alerts | Maintenance | Admin*
- * * Admin tab only visible to kris.hall@rechargealaska.net
+ * * Admin tab: full for kris.hall@rechargealaska.net; Deadlines-only for other
+ *   @rechargealaska.net staff; hidden from everyone else (AEA, site hosts).
  */
 
 import { useState, useEffect } from 'react'
@@ -79,6 +80,13 @@ export default function App() {
     return () => { cancelled = true }
   }, [userEmail])
 
+  // Deadline alert links (#deadline-<id>) open straight to Admin for staff.
+  useEffect(() => {
+    if ((me?.is_admin || me?.is_staff) && window.location.hash.startsWith('#deadline-')) {
+      setActiveTab('admin')
+    }
+  }, [me])
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -92,9 +100,10 @@ export default function App() {
   }
 
   const isAdmin = me?.is_admin ?? false
+  const isStaff = isAdmin || (me?.is_staff ?? false)
   const canSubmitPm = me?.can_submit_pm ?? false
   const technicianName = (me?.name?.trim() || userEmail.split('@')[0]) ?? 'Technician'
-  const visibleTabs = isAdmin ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS
+  const visibleTabs = isStaff ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -157,7 +166,7 @@ export default function App() {
           />
         )}
         {activeTab === 'utility'      && <UtilityTab />}
-        {activeTab === 'admin'        && isAdmin && <AdminTab />}
+        {activeTab === 'admin'        && isStaff && <AdminTab isAdmin={isAdmin} />}
       </main>
 
       {/* Alert toast overlay */}

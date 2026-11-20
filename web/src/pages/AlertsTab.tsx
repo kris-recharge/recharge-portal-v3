@@ -37,6 +37,8 @@ interface AlertMeta {
   description: string
   icon: React.ReactNode
   color: string
+  /** Only offered when the server lists it (ReCharge staff). */
+  staffOnly?: boolean
 }
 
 const ALERT_DEFS: AlertMeta[] = [
@@ -82,6 +84,15 @@ const ALERT_DEFS: AlertMeta[] = [
     icon: <CalendarClock size={18} />,
     color: 'text-red-700',
   },
+  {
+    type: 'deadlines',
+    label: 'Admin Deadlines',
+    description: 'Bills, filings and renewals from Admin → Deadlines. Counts down to the mail-by date for checks, '
+      + 'then daily once late, until the item is marked done or scheduled. ReCharge staff only.',
+    icon: <CalendarClock size={18} />,
+    color: 'text-amber-700',
+    staffOnly: true,
+  },
 ]
 
 const TYPE_LABELS: Record<string, string> = {
@@ -91,6 +102,7 @@ const TYPE_LABELS: Record<string, string> = {
   suspicious_vid:      '🔍 Suspicious VID',
   pm_due_14d:          '🔔 PM Due Soon',
   pm_overdue:          '⚠ PM Overdue',
+  deadlines:           '📅 Deadline',
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -106,6 +118,7 @@ const EMPTY_DRAFT: Record<AlertType, Channels> = {
   suspicious_vid:      { ...BLANK },
   pm_due_14d:          { ...BLANK },
   pm_overdue:          { ...BLANK },
+  deadlines:           { ...BLANK },
 }
 
 export function AlertsTab() {
@@ -121,6 +134,11 @@ export function AlertsTab() {
     queryFn:  fetchAlertHistory,
     refetchInterval: 60_000,   // refresh history every 60s
   })
+
+  // Staff-only types (Deadlines) appear only when the server includes them.
+  const visibleDefs = ALERT_DEFS.filter(
+    d => !d.staffOnly || (subData?.subscriptions ?? []).some(s => s.alert_type === d.type),
+  )
 
   // Local draft of subscription + per-channel state
   const [draft, setDraft] = useState<Record<AlertType, Channels>>(EMPTY_DRAFT)
@@ -161,13 +179,14 @@ export function AlertsTab() {
       suspicious_vid:      map['suspicious_vid']      ?? { ...BLANK },
       pm_due_14d:          map['pm_due_14d']          ?? { ...BLANK },
       pm_overdue:          map['pm_overdue']          ?? { ...BLANK },
+      deadlines:           map['deadlines']           ?? { ...BLANK },
     })
     setDirty(false)
   }, [subData])
 
   const saveMutation = useMutation({
     mutationFn: () => {
-      const payload: AlertSubscription[] = ALERT_DEFS.map(d => ({
+      const payload: AlertSubscription[] = visibleDefs.map(d => ({
         alert_type:    d.type,
         enabled:       draft[d.type].enabled,
         email_enabled: draft[d.type].email_enabled,
@@ -273,8 +292,8 @@ export function AlertsTab() {
     }
   }
 
-  const anyEnabled = ALERT_DEFS.some(d => draft[d.type].enabled)
-  const enabledCount = ALERT_DEFS.filter(d => draft[d.type].enabled).length
+  const anyEnabled = visibleDefs.some(d => draft[d.type].enabled)
+  const enabledCount = visibleDefs.filter(d => draft[d.type].enabled).length
 
   const pushReady    = subData?.push_supported ?? false
   const canSubscribe = pushSupported()
@@ -411,7 +430,7 @@ export function AlertsTab() {
         </div>
 
         <div className="divide-y divide-gray-50">
-          {ALERT_DEFS.map(def => (
+          {visibleDefs.map(def => (
             <div
               key={def.type}
               className="px-6 py-4 flex items-start gap-4 hover:bg-gray-50 transition-colors"

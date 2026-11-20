@@ -183,6 +183,7 @@ interface FormState {
   notes: string
   alert_offsets: string
   lead_business_days: string
+  roll_to_business_day: boolean
 }
 
 function toForm(d?: Deadline): FormState {
@@ -200,6 +201,7 @@ function toForm(d?: Deadline): FormState {
     alert_offsets: (d?.alert_offsets ?? DEFAULT_OFFSETS).join(', '),
     // New bills default to a mailed check — that's how ReCharge pays them.
     lead_business_days: String(d ? d.lead_business_days : CHECK_LEAD_DAYS),
+    roll_to_business_day: d?.roll_to_business_day ?? false,
   }
 }
 
@@ -231,6 +233,7 @@ function fromForm(f: FormState): DeadlineInput | string {
     notes: f.notes.trim() || null,
     alert_offsets: offsets,
     lead_business_days: lead,
+    roll_to_business_day: f.roll_to_business_day,
   }
 }
 
@@ -311,6 +314,16 @@ function DeadlineForm({ initial, onDone }: { initial?: Deadline; onDone: () => v
           <input className={inputCls} value={f.external_ref}
                  onChange={e => set('external_ref', e.target.value)} placeholder="INV1539" />
         </div>
+        <label className="sm:col-span-2 flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+          <input type="checkbox" className="mt-0.5" checked={f.roll_to_business_day}
+                 onChange={e => set('roll_to_business_day', e.target.checked)} />
+          <span>
+            If it lands on a weekend or holiday, it's due the next business day
+            <span className="block text-xs text-gray-400">
+              Like KPB sales tax: enter the normal date (e.g. the 1st). Repeats stay on that day.
+            </span>
+          </span>
+        </label>
         <div className="sm:col-span-2">
           <label className={label}>How it's paid / sent</label>
           <div className="flex flex-col sm:flex-row gap-2">

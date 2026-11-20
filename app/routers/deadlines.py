@@ -30,7 +30,8 @@ from ..auth import CurrentUser, PortalUser, is_staff
 from ..config import DEV_BYPASS_AUTH
 from ..db import acquire
 from ..deadline_logic import (
-    action_date, add_business_days, days_remaining, next_due_date, today_ak, urgency,
+    action_date, add_business_days, days_remaining, next_business_day, next_due_date, today_ak,
+    urgency,
 )
 
 router = APIRouter(prefix="/api/admin/deadlines", tags=["deadlines"])
@@ -108,6 +109,8 @@ class DeadlineCreate(DeadlineBase):
     recurrence: RecurrenceT = "none"
     alert_offsets: list[int] = Field(default_factory=lambda: [14, 7, 3, 1, 0], max_length=20)
     lead_business_days: int = Field(0, ge=0, le=30)  # 7 for a Wells Fargo mailed check
+    # A weekend/holiday due date moves to the next business day (KPB sales tax).
+    roll_to_business_day: bool = False
 
     @field_validator("title")
     @classmethod
@@ -125,6 +128,7 @@ class DeadlinePatch(DeadlineBase):
     recurrence: RecurrenceT | None = None
     alert_offsets: list[int] | None = Field(None, max_length=20)
     lead_business_days: int | None = Field(None, ge=0, le=30)
+    roll_to_business_day: bool | None = None
     # Only 'open' is accepted: it undoes "scheduled" (or reopens a done item).
     # Done / scheduled / cancelled go through their own routes.
     status: Literal["open"] | None = None
@@ -152,7 +156,7 @@ class SnoozeBody(BaseModel):
 
 _COLS = (
     "id::text, series_id::text, title, category, vendor, amount, due_date, notes, link_url, "
-    "document_url, lead_business_days, "
+    "document_url, lead_business_days, anchor_day, roll_to_business_day, "
     "external_ref, status, scheduled_on, completed_at, snoozed_until, recurrence, alert_offsets, "
     "source, created_by, created_at, updated_at"
 )
@@ -248,19 +252,24 @@ async def list_deadlines(
 
 @router.post("", status_code=201)
 async def create_deadline(body: DeadlineCreate, user: StaffUser):
+    # The date as entered is the day the series is meant to fall on (KPB: the
+    # 1st). With rolling on, this instance lands on the next business day.
+    due = next_business_day(body.due_date) if body.roll_to_business_day else body.due_date
+    anchor = body.due_date.day if body.recurrence != "none" else None
     async with acquire() as conn:
         try:
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO admin_deadlines
                   (title, category, vendor, amount, due_date, notes, link_url, external_ref,
-                   recurrence, alert_offsets, source, created_by, document_url, lead_business_days)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'manual',$11,$12,$13)
+                   recurrence, alert_offsets, source, created_by, document_url, lead_business_days,
+                   anchor_day, roll_to_business_day)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'manual',$11,$12,$13,$14,$15)
                 RETURNING {_COLS}
                 """,
-                body.title, body.category, body.vendor, body.amount, body.due_date, body.notes,
+                body.title, body.category, body.vendor, body.amount, due, body.notes,
                 body.link_url, body.external_ref, body.recurrence, body.alert_offsets, user.email,
-                body.document_url, body.lead_business_days,
+                body.document_url, body.lead_business_days, anchor, body.roll_to_business_day,
             )
         except (asyncpg.UniqueViolationError, asyncpg.CheckViolationError) as e:
             raise _db_error(e)
@@ -276,7 +285,8 @@ async def update_deadline(deadline_id: str, body: DeadlinePatch, _: StaffUser):
         if k in sent:
             fields[k] = getattr(body, k)
     # Required fields: null means "leave alone".
-    for k in ("title", "category", "due_date", "recurrence", "alert_offsets", "lead_business_days"):
+    for k in ("title", "category", "due_date", "recurrence", "alert_offsets", "lead_business_days",
+              "roll_to_business_day"):
         if k in sent and getattr(body, k) is not None:
             fields[k] = getattr(body, k)
     if body.status == "open":
@@ -284,12 +294,21 @@ async def update_deadline(deadline_id: str, body: DeadlinePatch, _: StaffUser):
     if not fields:
         raise HTTPException(400, "No fields to update")
 
-    set_clause = ", ".join(f"{k} = ${i + 2}" for i, k in enumerate(fields))
     async with acquire() as conn:
         async with conn.transaction():
             current = await _fetch_one(conn, deadline_id, lock=True)
             if current["status"] == "cancelled":
                 raise HTTPException(409, "This deadline was deleted")
+            entered = fields.get("due_date", current["due_date"])
+            # Newly recurring: remember the day the series falls on.
+            if fields.get("recurrence", current["recurrence"]) != "none" and current["anchor_day"] is None:
+                fields["anchor_day"] = entered.day
+            # Rolling applies to a newly entered date, or when switched on.
+            if fields.get("roll_to_business_day", current["roll_to_business_day"]) and (
+                "due_date" in fields or fields.get("roll_to_business_day")
+            ):
+                fields["due_date"] = next_business_day(entered)
+            set_clause = ", ".join(f"{k} = ${i + 2}" for i, k in enumerate(fields))
             try:
                 row = await conn.fetchrow(
                     f"UPDATE admin_deadlines SET {set_clause}, updated_at = now() "
@@ -324,26 +343,34 @@ async def complete_deadline(deadline_id: str, _: StaffUser):
 
             nxt = None
             if current["recurrence"] != "none":
-                anchor = await conn.fetchval(
-                    "SELECT due_date FROM admin_deadlines WHERE series_id = $1::uuid "
-                    "AND status <> 'cancelled' ORDER BY due_date LIMIT 1",
-                    current["series_id"],
+                anchor = current["anchor_day"]
+                if anchor is None:  # items made before anchor_day existed
+                    first = await conn.fetchval(
+                        "SELECT due_date FROM admin_deadlines WHERE series_id = $1::uuid "
+                        "AND status <> 'cancelled' ORDER BY due_date LIMIT 1",
+                        current["series_id"],
+                    )
+                    anchor = first.day
+                next_due = next_due_date(
+                    current["due_date"], current["recurrence"], anchor,
+                    roll=current["roll_to_business_day"],
                 )
-                next_due = next_due_date(current["due_date"], current["recurrence"], anchor.day)
                 # external_ref and document_url are per-instance (this cycle's
                 # invoice), so they are not carried forward; neither is anything about this cycle's status.
                 nxt = await conn.fetchrow(
                     f"""
                     INSERT INTO admin_deadlines
                       (series_id, title, category, vendor, amount, due_date, notes, link_url,
-                       recurrence, alert_offsets, lead_business_days, source, created_by)
+                       recurrence, alert_offsets, lead_business_days, source, created_by,
+                       anchor_day, roll_to_business_day)
                     SELECT series_id, title, category, vendor, amount, $2, notes, link_url,
-                           recurrence, alert_offsets, lead_business_days, 'recurrence', created_by
+                           recurrence, alert_offsets, lead_business_days, 'recurrence', created_by,
+                           $3, roll_to_business_day
                     FROM admin_deadlines WHERE id = $1::uuid
                     ON CONFLICT (series_id, due_date) WHERE status <> 'cancelled' DO NOTHING
                     RETURNING {_COLS}
                     """,
-                    deadline_id, next_due,
+                    deadline_id, next_due, anchor,
                 )
     return {
         "item": _serialize(done, today),

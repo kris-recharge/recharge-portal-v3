@@ -37,7 +37,12 @@ from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
 
-MIGRATION = Path(__file__).resolve().parents[1] / "app/migrations/20261120_admin_deadlines.sql"
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "app/migrations"
+# Applied in order, exactly as they are run by hand on production.
+MIGRATIONS = [_MIGRATIONS_DIR / n for n in (
+    "20261120_admin_deadlines.sql",
+    "20261121_deadline_business_day_roll.sql",
+)]
 
 # Just enough of the portal's existing tables (and Supabase's auth schema) for
 # the deadline features to run against.
@@ -80,7 +85,8 @@ def db():
         conn.execute("GRANT USAGE ON SCHEMA public TO anon, authenticated")
         conn.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated")
         conn.execute(_SUPPORT_SCHEMA)
-        conn.execute(MIGRATION.read_text())
+        for m in MIGRATIONS:
+            conn.execute(m.read_text())
         yield conn
 
 

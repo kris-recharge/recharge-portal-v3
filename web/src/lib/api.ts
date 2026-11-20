@@ -987,6 +987,10 @@ export interface Deadline {
   created_by: string | null
   /** Business days in transit (7 for a Wells Fargo mailed check, 0 if paid online). */
   lead_business_days: number
+  /** Weekend/holiday due dates move to the next business day (KPB sales tax). */
+  roll_to_business_day: boolean
+  /** Day of the month a recurring series is meant to fall on. */
+  anchor_day: number | null
   /** When it must be DONE: the mail-by date for a check, else the due date. */
   action_date: string
   days_remaining: number      // to action_date, against today in Anchorage
@@ -1015,6 +1019,7 @@ export interface DeadlineInput {
   recurrence: DeadlineRecurrence
   alert_offsets: number[]
   lead_business_days: number
+  roll_to_business_day: boolean
 }
 
 export function fetchDeadlines(statuses: DeadlineStatus[], category?: DeadlineCategory | null) {

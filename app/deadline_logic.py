@@ -132,7 +132,29 @@ def action_date(due: date, lead_business_days: int) -> date:
     return subtract_business_days(last, lead_business_days)
 
 
-def next_due_date(current: date, recurrence: str, anchor_day: int | None = None) -> date:
+def next_business_day(d: date) -> date:
+    """`d` itself if it is a business day, else the next one. Government
+    offices (KPB sales tax, for one) push a weekend or holiday due date to the
+    next business day: the 1st of May 2027 is a Saturday, so it's due Mon May 3.
+    Uses federal holidays; the 1st-of-month KPB dates never hit an
+    Alaska-only holiday (Seward's Day, Alaska Day)."""
+    while not is_business_day(d):
+        d += timedelta(days=1)
+    return d
+
+
+def _on_day(year: int, month: int, day: int) -> date:
+    return date(year, month, min(day, _month_len(year, month)))
+
+
+def _add_months(d: date, months: int, day: int) -> date:
+    idx = d.month - 1 + months
+    return _on_day(d.year + idx // 12, idx % 12 + 1, day)
+
+
+def next_due_date(
+    current: date, recurrence: str, anchor_day: int | None = None, roll: bool = False,
+) -> date:
     """Move `current` forward one period, clamping to the end of short months.
 
     `anchor_day` is the day-of-month the series is meant to fall on (the day of
@@ -141,20 +163,33 @@ def next_due_date(current: date, recurrence: str, anchor_day: int | None = None)
 
     If `current` is not on the anchor day (or its clamped form), someone moved
     this instance by hand, so its own day becomes the anchor from here on.
+
+    With `roll`, a due date that lands on a weekend or holiday moves to the
+    next business day, and the series keeps counting from the date it was
+    meant to fall on: KPB's quarterly return is due the 1st, so Feb 1 → May 1
+    (Sat) → Mon May 3 → Aug 1 (Sun) → Mon Aug 2 → Nov 1, never drifting to the 3rd.
     """
     months = PERIOD_MONTHS.get(recurrence)
     if months is None:
         raise ValueError(f"not a recurring period: {recurrence!r}")
+
+    if roll and anchor_day is not None:
+        # Which anchor date did `current` roll forward from? Usually the same
+        # month; for an anchor near month end it can be the month before.
+        prev = date(current.year, current.month, 1) - timedelta(days=1)
+        for y, m in ((current.year, current.month), (prev.year, prev.month)):
+            meant = _on_day(y, m, anchor_day)
+            if meant <= current and next_business_day(meant) == current:
+                return next_business_day(_add_months(meant, months, anchor_day))
+        # Moved by hand: carry on from its own day.
+        return next_business_day(_add_months(current, months, current.day))
 
     day = current.day
     if anchor_day is not None:
         clamped_anchor = min(anchor_day, _month_len(current.year, current.month))
         if current.day == clamped_anchor:
             day = anchor_day
-
-    idx = current.month - 1 + months
-    year, month = current.year + idx // 12, idx % 12 + 1
-    return date(year, month, min(day, _month_len(year, month)))
+    return _add_months(current, months, day)
 
 
 # ── Which alert (if any) is due today ─────────────────────────────────────────

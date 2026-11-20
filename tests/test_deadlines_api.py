@@ -222,3 +222,56 @@ def test_recurrence_keeps_lead_time_but_not_invoice_file(staff):
                 document_url="https://example.com/nov.pdf")
     nxt = staff.post(f"/api/admin/deadlines/{d['id']}/complete").json()["next"]
     assert nxt["lead_business_days"] == 7 and nxt["document_url"] is None
+
+
+# ── Government calendars ──────────────────────────────────────────────────────
+
+def test_kpb_quarterly_rolls_and_repeats_forever(staff):
+    # Entered as the normal date; May 1 2027 is a Saturday.
+    d = _create(staff, title="KPB sales tax (quarterly)", category="tax", recurrence="quarterly",
+                due_date="2027-05-01", roll_to_business_day=True)
+    assert d["due_date"] == "2027-05-03" and d["anchor_day"] == 1
+    dues = []
+    for _ in range(3):
+        d = staff.post(f"/api/admin/deadlines/{d['id']}/complete").json()["next"]
+        dues.append(d["due_date"])
+    assert dues == ["2027-08-02", "2027-11-01", "2028-02-01"]
+    assert d["roll_to_business_day"] is True and d["anchor_day"] == 1
+
+
+def test_switching_roll_on_moves_a_weekend_date(staff):
+    d = _create(staff, due_date="2027-05-01")
+    assert d["due_date"] == "2027-05-01"
+    r = staff.patch(f"/api/admin/deadlines/{d['id']}", json={"roll_to_business_day": True}).json()
+    assert r["due_date"] == "2027-05-03"
+
+
+def test_making_an_item_recurring_records_its_day(staff):
+    d = _create(staff, due_date="2027-01-31")
+    assert d["anchor_day"] is None
+    r = staff.patch(f"/api/admin/deadlines/{d['id']}", json={"recurrence": "monthly"}).json()
+    assert r["anchor_day"] == 31
+
+
+def test_recurring_seed_runs_twice_and_kpb_repeats(staff, db):
+    from pathlib import Path
+    seed = (Path(__file__).resolve().parents[1] / "app/seeds/20261121_recurring_deadlines.sql").read_text()
+    db.execute(seed)
+    db.execute(seed)  # re-running adds nothing
+    items = {i["title"]: i for i in staff.get("/api/admin/deadlines").json()["items"]}
+    assert {t: items[t]["due_date"] for t in items} == {
+        "KPB sales tax return (quarterly)": "2027-02-01",
+        "Business insurance renewal": "2027-08-01",
+        "Alaska biennial report (LLC)": "2028-01-02",
+        "Copper Valley Subway land lease": "2027-01-01",
+        "SAM.gov registration renewal": "2027-08-01",
+    }
+    lease = items["Copper Valley Subway land lease"]
+    assert lease["amount"] == 1200 and lease["lead_business_days"] == 7
+    assert lease["action_date"] == "2026-12-21"  # mail by: skips Christmas and New Year's Day
+    assert items["KPB sales tax return (quarterly)"]["lead_business_days"] == 0
+    kpb = items["KPB sales tax return (quarterly)"]
+    nxt = staff.post(f"/api/admin/deadlines/{kpb['id']}/complete").json()["next"]
+    assert nxt["due_date"] == "2027-05-03" and nxt["external_ref"] is None
+    bien = items["Alaska biennial report (LLC)"]
+    assert staff.post(f"/api/admin/deadlines/{bien['id']}/complete").json()["next"]["due_date"] == "2030-01-02"

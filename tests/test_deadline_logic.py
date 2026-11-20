@@ -168,3 +168,51 @@ def test_moving_the_due_date_rearms_the_countdown():
     a = _plan(date(2026, 11, 25))
     b = _plan(date(2026, 11, 25), due=date(2026, 12, 14))  # Mon → mail by Thu Dec 3
     assert a[0] != b[0]
+
+
+# ── Government calendars: weekend/holiday → next business day ─────────────────
+
+from app.deadline_logic import next_business_day  # noqa: E402
+
+
+def _series(first: date, recurrence: str, n: int) -> list[str]:
+    d, out = next_business_day(first), []
+    for _ in range(n):
+        out.append(d.isoformat())
+        d = next_due_date(d, recurrence, first.day, roll=True)
+    return out
+
+
+def test_kpb_quarterly_matches_published_2027_table():
+    # kpb.us sales-tax resources: Dec 2026, Mar/Jun/Sep/Dec 2027 periods.
+    assert _series(date(2027, 2, 1), "quarterly", 5) == [
+        "2027-02-01", "2027-05-03", "2027-08-02", "2027-11-01", "2028-02-01",
+    ]
+
+
+def test_kpb_monthly_matches_published_table():
+    # Nov 2026 period (Jan 1 holiday → Jan 4) through Nov 2027 (Jan 1 2028 Sat → Jan 3).
+    assert _series(date(2027, 1, 1), "monthly", 13) == [
+        "2027-01-04", "2027-02-01", "2027-03-01", "2027-04-01", "2027-05-03", "2027-06-01",
+        "2027-07-01", "2027-08-02", "2027-09-01", "2027-10-01", "2027-11-01", "2027-12-01",
+        "2028-01-03",
+    ]
+
+
+def test_rolled_date_does_not_become_the_new_pattern():
+    # May 3 was rolled from May 1, so the next one is the 1st again, not the 3rd.
+    assert next_due_date(date(2027, 5, 3), "quarterly", 1, roll=True) == date(2027, 8, 2)
+
+
+def test_roll_across_month_end():
+    # Anchor the 31st: Jul 31 2027 is a Saturday → Mon Aug 2; next is Aug 31.
+    assert next_business_day(date(2027, 7, 31)) == date(2027, 8, 2)
+    assert next_due_date(date(2027, 8, 2), "monthly", 31, roll=True) == date(2027, 8, 31)
+
+
+def test_roll_series_moved_by_hand_keeps_its_new_day():
+    assert next_due_date(date(2027, 5, 14), "quarterly", 1, roll=True) == date(2027, 8, 16)  # 14th is a Sat
+
+
+def test_without_roll_weekend_dates_stay_put():
+    assert next_due_date(date(2027, 2, 1), "quarterly", 1) == date(2027, 5, 1)

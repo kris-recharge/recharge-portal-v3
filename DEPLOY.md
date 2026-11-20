@@ -210,6 +210,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f app/migrations/20261120_admin_deadlin
 applied, the Deadlines section shows "Couldn't load deadlines" (the rest of the
 portal is unaffected).
 
+| File | Applied to production |
+|---|---|
+| `20261120_admin_deadlines.sql` | 2026-11-20 |
+| `20261121_deadline_business_day_roll.sql` | 2026-11-20 (with seed `app/seeds/20261121_recurring_deadlines.sql`) |
+
+One-off data seeds live in `app/seeds/` (not migrations). Run each once in the
+SQL editor after the migrations it needs; they skip rows that already exist.
+
 ## Tests
 ```bash
 pip install pytest psycopg[binary]

@@ -202,7 +202,10 @@ class ExportRequest(BaseModel):
 # ── Alerts Config & History ───────────────────────────────────────────────────
 
 ALERT_TYPES = ("offline_idle", "offline_mid_session", "fault", "suspicious_vid",
-               "double_charge", "pm_due_14d", "pm_overdue")
+               "double_charge", "pm_due_14d", "pm_overdue", "deadlines")
+
+# Alert types only @rechargealaska.net accounts may see or subscribe to.
+STAFF_ALERT_TYPES = frozenset({"deadlines"})
 
 class AlertSubscription(BaseModel):
     alert_type: str   # one of ALERT_TYPES

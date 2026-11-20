@@ -20,7 +20,7 @@ Deduplication:
   - PM due / overdue: deduplicates via fired_alerts table (20-day window for 14d notice;
     7-day window for overdue weekly reminders).
 
-Email is sent via Microsoft 365 SMTP (smtp.office365.com:587).
+Email is sent over SMTP (production: Gmail, smtp.gmail.com:587, from rechargealaska@gmail.com).
 Browser banner is pushed via SSE (broadcast_alert → /api/alerts/stream).
 """
 
@@ -47,6 +47,7 @@ from .connector_counts import accumulate as accumulate_connector_counts
 from .connector_counts import ensure_tables as ensure_connector_count_tables
 from .constants import display_name, get_all_station_ids
 from .db import get_conn_sync
+from .deadline_alerts import check_deadline_alerts
 from .push import build_payload, push_available, send_to_subscriptions
 
 # How many poll cycles between fired_alerts cleanup runs (60s × 240 = ~4 hours)
@@ -57,6 +58,10 @@ _cleanup_counter = 0
 # Initialized to _PM_CHECK_EVERY_N so the first check runs immediately on startup.
 _PM_CHECK_EVERY_N = 60
 _pm_check_counter = _PM_CHECK_EVERY_N
+
+# Admin Deadlines check cadence (in poll ticks); first check runs on startup.
+_DEADLINE_CHECK_EVERY_N = 15
+_deadline_check_counter = _DEADLINE_CHECK_EVERY_N
 
 logger = logging.getLogger("rca.alerts")
 
@@ -1061,7 +1066,7 @@ def _check_pm_due(conn) -> None:
 # ── Main poll loop ────────────────────────────────────────────────────────────
 
 def _run_poll_loop() -> None:
-    global _cleanup_counter, _pm_check_counter
+    global _cleanup_counter, _pm_check_counter, _deadline_check_counter
     logger.info("Alert poll loop started (interval=%ds)", POLL_INTERVAL_SEC)
 
     # Ensure the connector-count odometer tables exist before the first tick.
@@ -1086,6 +1091,16 @@ def _run_poll_loop() -> None:
 
                 # Roll the connector-count odometer forward (plug-in counter).
                 accumulate_connector_counts(conn)
+
+                # Admin Deadlines — every ~15 min; sends nothing before 08:00
+                # AK and never repeats an alert (claimed per key in the DB).
+                _deadline_check_counter += 1
+                if _deadline_check_counter >= _DEADLINE_CHECK_EVERY_N:
+                    _deadline_check_counter = 0
+                    try:
+                        check_deadline_alerts(conn)
+                    except Exception as exc:
+                        logger.error("Deadline alerts failed: %s", exc, exc_info=True)
 
                 # PM due-date check — runs every ~1 hour
                 _pm_check_counter += 1

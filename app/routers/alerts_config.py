@@ -12,8 +12,8 @@ from fastapi import APIRouter
 
 from fastapi import Request
 
-from ..auth import CurrentUser
-from ..config import VAPID_PUBLIC_KEY
+from ..auth import CurrentUser, PortalUser, is_staff
+from ..config import DEV_BYPASS_AUTH, VAPID_PUBLIC_KEY
 from ..db import acquire
 from ..models import (
     ALERT_TYPES,
@@ -23,12 +23,21 @@ from ..models import (
     BannerScopeRequest,
     FiredAlert,
     PushDevice,
+    STAFF_ALERT_TYPES,
 )
 from ..push import push_available
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
 _AK = ZoneInfo("America/Anchorage")
+
+
+def _alert_types_for(user: PortalUser) -> tuple[str, ...]:
+    """Deadline alerts carry vendor amounts and filings: staff only. External
+    users never see the type and can't subscribe to it."""
+    if DEV_BYPASS_AUTH or is_staff(user.email):
+        return ALERT_TYPES
+    return tuple(t for t in ALERT_TYPES if t not in STAFF_ALERT_TYPES)
 
 
 def _fmt_ak(dt) -> str:
@@ -79,7 +88,7 @@ async def get_subscriptions(user: CurrentUser, request: Request = None):  # noqa
             email_enabled=bool(by_type[at]["email_enabled"]) if at in by_type else True,
             push_enabled=bool(by_type[at]["push_enabled"]) if at in by_type else False,
         )
-        for at in ALERT_TYPES
+        for at in _alert_types_for(user)
     ]
 
     return AlertSubscriptionsResponse(
@@ -111,9 +120,10 @@ async def update_subscriptions(
     request: Request = None,  # noqa: B008
 ):
     """Upsert all 4 alert type preferences for the current user."""
+    allowed_types = _alert_types_for(user)
     async with acquire() as conn:
         for sub in body:
-            if sub.alert_type not in ALERT_TYPES:
+            if sub.alert_type not in allowed_types:
                 continue
             await conn.execute(
                 """
